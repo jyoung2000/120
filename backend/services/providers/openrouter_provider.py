@@ -56,16 +56,47 @@ PRESETS = {
         "vision": "google/gemini-2.5-flash",
         "summary": "google/gemini-2.5-flash",
         "text": "google/gemini-2.5-flash",
+        "vision_fallbacks": [
+            "google/gemini-2.5-flash-lite",
+        ],
+        "summary_fallbacks": [
+            "google/gemini-2.5-flash-lite",
+        ],
+        "text_fallbacks": [
+            "google/gemini-2.5-flash-lite",
+        ],
     },
     "balanced": {
         "vision": "google/gemini-2.5-flash",
         "summary": "google/gemini-2.5-flash",
         "text": "google/gemini-2.5-pro",
+        "vision_fallbacks": [
+            "google/gemini-2.5-flash-lite",
+        ],
+        "summary_fallbacks": [
+            "google/gemini-2.5-pro",
+            "google/gemini-2.5-flash-lite",
+        ],
+        "text_fallbacks": [
+            "google/gemini-2.5-flash",
+            "google/gemini-2.5-flash-lite",
+        ],
     },
     "premium": {
         "vision": "google/gemini-2.5-pro",
         "summary": "google/gemini-2.5-flash",
         "text": "anthropic/claude-sonnet-4",
+        "vision_fallbacks": [
+            "google/gemini-2.5-flash",
+        ],
+        "summary_fallbacks": [
+            "google/gemini-2.5-pro",
+            "google/gemini-2.5-flash-lite",
+        ],
+        "text_fallbacks": [
+            "google/gemini-2.5-pro",
+            "google/gemini-2.5-flash",
+        ],
     },
 }
 
@@ -212,9 +243,17 @@ class OpenRouterProvider(AIProvider):
             raise
         except Exception as e:
             err_str = str(e)
-            if "429" in err_str or "rate" in err_str.lower():
-                logger.warning("OpenRouter rate limited on %s, waiting 5s...", model)
-                await asyncio.sleep(5)
+            # Retry on rate limits (429) or transient server errors (5xx)
+            is_rate_limit = "429" in err_str or "rate" in err_str.lower()
+            is_server_error = any(code in err_str for code in ("500", "502", "503", "504"))
+            if is_rate_limit or is_server_error:
+                wait_s = 5 if is_rate_limit else 3
+                logger.warning(
+                    "OpenRouter %s on %s, waiting %ds before retry...",
+                    "rate limited" if is_rate_limit else "server error",
+                    model, wait_s,
+                )
+                await asyncio.sleep(wait_s)
                 try:
                     response = await asyncio.wait_for(
                         self._client.chat.completions.create(
@@ -231,11 +270,13 @@ class OpenRouterProvider(AIProvider):
                         raise ProviderError(f"OpenRouter empty response after retry ({model})")
                     return response.choices[0].message.content or ""
                 except asyncio.TimeoutError:
-                    raise ProviderError(f"OpenRouter timeout after rate-limit retry ({model})")
+                    raise ProviderError(f"OpenRouter timeout after retry ({model})")
                 except ProviderError:
                     raise
                 except Exception:
-                    raise ProviderRateLimitError(f"OpenRouter rate limited: {e}")
+                    if is_rate_limit:
+                        raise ProviderRateLimitError(f"OpenRouter rate limited: {e}")
+                    raise ProviderError(f"OpenRouter server error after retry ({model}): {e}")
             raise ProviderError(f"OpenRouter error ({model}): {e}")
 
     async def _call_with_fallback(
@@ -243,17 +284,26 @@ class OpenRouterProvider(AIProvider):
         max_tokens: int = 4096, is_vision: bool = False, cancel_check=None,
         timeout: int | None = None,
     ) -> str:
-        """Try primary model, then each fallback in order, then openrouter/free.
+        """Try primary model, then each fallback in order.
 
-        When a timeout is specified, the primary gets 40% and the remaining
-        budget is split equally across fallback models.
+        For the "free" preset, appends openrouter/free as the final
+        fallback.  For paid presets (efficient/balanced/premium/custom),
+        openrouter/free is NOT appended because the free routing
+        endpoint may not work with the user's API key (commonly returns
+        401 "User not found" for accounts that don't have free-tier
+        access, masking the real error from the primary model).
+
+        When a timeout is specified, the primary gets 40% and the
+        remaining budget is split equally across fallback models.
         """
-        # Build deduplicated model chain: primary → fallbacks → openrouter/free
+        # Build deduplicated model chain: primary → fallbacks
         chain = [primary]
         for fb in (fallbacks or []):
             if fb not in chain:
                 chain.append(fb)
-        if "openrouter/free" not in chain:
+        # Only append openrouter/free for the free preset — paid presets
+        # should not fall back to free routing which often fails with 401.
+        if self._preset_name == "free" and "openrouter/free" not in chain:
             chain.append("openrouter/free")
 
         # Distribute timeout: primary gets 40%, rest is split among fallbacks
@@ -265,7 +315,7 @@ class OpenRouterProvider(AIProvider):
             primary_timeout = timeout
             fb_timeout = timeout
 
-        last_error: ProviderError | None = None
+        errors: list[tuple[str, ProviderError]] = []
         for i, model in enumerate(chain):
             model_timeout = primary_timeout if i == 0 else fb_timeout
             try:
@@ -273,13 +323,20 @@ class OpenRouterProvider(AIProvider):
                     model, messages, max_tokens, cancel_check, timeout=model_timeout,
                 )
             except ProviderError as e:
-                last_error = e
+                errors.append((model, e))
                 logger.warning(
                     "OpenRouter model %s failed (%d/%d): %s",
                     model, i + 1, len(chain), e,
                 )
                 continue
-        raise last_error or ProviderError("All OpenRouter models failed")
+        # Report ALL errors (not just the last one) so the user can see
+        # which primary model failed and why, rather than only seeing the
+        # final fallback error which may be misleading (e.g. 401 on
+        # openrouter/free masking a rate-limit on the primary model).
+        if errors:
+            error_details = "; ".join(f"{m}: {e}" for m, e in errors)
+            raise ProviderError(f"All OpenRouter models failed — {error_details}")
+        raise ProviderError("All OpenRouter models failed (no models in chain)")
 
     async def _call_cancellable(
         self, model: str, messages: list[dict], max_tokens: int = 4096,

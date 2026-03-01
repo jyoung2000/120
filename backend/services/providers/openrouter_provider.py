@@ -33,23 +33,32 @@ PRESETS = {
         "vision": "openrouter/free",
         "summary": "openrouter/free",
         "text": "openrouter/free",
-        # Ordered by reliability + vision quality for free models
+        # Ordered by reliability + vision quality for free models.
+        # Google Gemini models are included as final fallbacks because
+        # :free models often return 401 "User not found" for API keys
+        # that don't have free-tier access.  Gemini models use Google's
+        # own auth path via OpenRouter and work with most API keys.
         "vision_fallbacks": [
             "qwen/qwen2.5-vl-72b-instruct:free",
             "qwen/qwen2.5-vl-32b-instruct:free",
             "google/gemma-3-27b-it:free",
             "meta-llama/llama-3.2-11b-vision-instruct:free",
             "mistralai/mistral-small-3.1-24b-instruct:free",
+            "google/gemini-2.5-flash",
         ],
         "summary_fallbacks": [
             "google/gemma-3-27b-it:free",
             "mistralai/mistral-small-3.1-24b-instruct:free",
             "meta-llama/llama-3.2-11b-vision-instruct:free",
+            "google/gemini-2.5-flash",
+            "google/gemini-2.5-flash-lite",
         ],
         "text_fallbacks": [
             "google/gemma-3-27b-it:free",
             "mistralai/mistral-small-3.1-24b-instruct:free",
             "meta-llama/llama-3.2-11b-vision-instruct:free",
+            "google/gemini-2.5-flash",
+            "google/gemini-2.5-flash-lite",
         ],
     },
     "efficient": {

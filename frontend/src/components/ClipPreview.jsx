@@ -140,12 +140,14 @@ function getCurrentWordIndex(segment, relativeTime, speakerRates) {
   // Use real per-word timestamps from Whisper when available and word count
   // matches the display text (user may have edited the transcript text).
   // Words are already in clip-relative time (offset during clipSegments construction).
-  // With real timestamps we skip the audio buffer (which was a heuristic for the
-  // estimation path) and add a small anticipation so the highlight feels snappy
-  // and leads the spoken audio slightly for perceptual sync.
+  // Apply the same audio buffer compensation as the fallback path — browsers
+  // report video.currentTime ~120ms before the user actually hears the audio
+  // (output pipeline latency).  Combined with the 80ms anticipation lead, the
+  // net perceptual effect is: highlight appears ~80ms before the word is heard,
+  // which feels like natural "reading ahead" sync.
   if (segment.words && segment.words.length === words.length) {
     const anticipation = 0.08; // 80ms lead for perceptual sync
-    const adjusted = relativeTime + anticipation;
+    const adjusted = relativeTime + anticipation - _AUDIO_BUFFER_S;
     if (adjusted < segment.words[0].start) return -1;
     for (let i = 0; i < segment.words.length; i++) {
       if (adjusted < segment.words[i].end) return i;

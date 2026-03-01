@@ -333,11 +333,10 @@ async def _run_analysis_inner(job_id: str):
             lang_info = f" [{info['lang']}]" if info.get("lang") else ""
             pos = _fmt_time(info["position_sec"])
             total = _fmt_time(audio_duration) if audio_duration > 0 else "?"
-            eta = _fmt_eta(info["eta_sec"]) if info.get("eta_sec", 0) > 0 else ""
+            # Pipeline-wide ETA is appended by _update_branch_progress — no
+            # branch-specific ETA here to avoid confusing double "remaining" messages.
             parts = [f"Transcribing{lang_info}: {pos} / {total}"]
             parts.append(f"{info['segments']} segments")
-            if eta:
-                parts.append(eta)
             branch_pct = 5 + pct * 0.95  # 5-100% (audio already extracted in Step 2)
             await _update_branch_progress("transcription", branch_pct,
                 JobStatus.TRANSCRIBING, " \u2014 ".join(parts))
@@ -400,15 +399,12 @@ async def _run_analysis_inner(job_id: str):
 
         async def _scene_progress(frames_done, frames_total, provider_name):
             pct = int((frames_done / max(frames_total, 1)) * 100)
-            elapsed = _time.monotonic() - _scene_start
-            eta = ""
-            if pct > 0:
-                remaining = max(0, (elapsed / (pct / 100)) * (1 - pct / 100))
-                eta = f" \u2014 {_fmt_eta(remaining)}"
             branch_pct = 10 + pct * 0.9  # 10-100% of branch
+            # Pipeline-wide ETA is appended by _update_branch_progress — no
+            # branch-specific ETA here to avoid confusing double "remaining" messages.
             await _update_branch_progress("scene_analysis", branch_pct,
                 JobStatus.ANALYZING_SCENES,
-                f"Analyzing frame {frames_done}/{frames_total} via {provider_name} ({pct}%){eta}")
+                f"Analyzing frame {frames_done}/{frames_total} via {provider_name} ({pct}%)")
 
         try:
             scenes_result, provider = await orchestrator.analyze_frames(

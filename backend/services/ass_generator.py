@@ -352,7 +352,7 @@ def generate_ass(
         f"PlayResX: {video_width}",
         f"PlayResY: {video_height}",
         "WrapStyle: 1",
-        "ScaledBorderAndShadow: no",
+        "ScaledBorderAndShadow: yes",
         "",
         "[V4+ Styles]",
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
@@ -434,15 +434,19 @@ def generate_ass(
         safe_text = text.replace("\\", "\\\\").replace("{", "\\{").replace("}", "\\}")
 
         if active_word_enabled:
-            # --- Layer 0: base text event for full segment duration ---
-            # Shows ALL words in the speaker's base color with outline.
-            # This event is ALWAYS visible, providing a stable backdrop.
+            # --- Single-layer approach: word events on Layer 0 only ---
+            # Each word event contains the FULL segment text with inline
+            # color overrides (active word highlighted, others in base color).
+            # Gap-filling ensures complete temporal coverage so no base text
+            # layer is needed.
+            #
+            # The old two-layer approach (Layer 0 base + Layer 1 overlay)
+            # caused garbled/overlapping text in exports when the layers
+            # didn't composite perfectly (e.g. outline rendering differences
+            # between layers, font fallback mismatches).
             prefix = f"{speaker}: " if show_speaker_labels and speaker else ""
-            base_override = f"{{{bord_tag}}}" if bord_tag else ""
-            base_event_text = f"{prefix}{base_override}{safe_text}"
-            base_text_events.append((clip_start, clip_end, style_name, base_event_text))
 
-            # --- Layer 1: per-word highlight events ---
+            # --- Per-word highlight events (Layer 0) ---
             words = safe_text.split()
             if len(words) <= 1:
                 # Single word — just color the whole event with active word color
@@ -482,6 +486,10 @@ def generate_ass(
                     w_start = max(w_start - _WORD_ANTICIPATION_S, clip_start)
                     w_end = max(w_end - _WORD_ANTICIPATION_S, w_start + 0.01)
                     w_end = min(w_end, clip_end)
+                    # Ensure first word starts at segment start for complete
+                    # coverage (no gap at beginning where no subtitle shows).
+                    if word_idx == 0:
+                        w_start = clip_start
                     if word_idx == len(words) - 1:
                         w_end = clip_end
                     if w_end - w_start < 0.01:
@@ -667,14 +675,16 @@ def generate_ass(
         return total_minutes * 6000 + cs_from_seconds
 
     # Collect all events as (layer, start, end, style, text) tuples.
+    # When active_word_enabled, word events go on Layer 0 (single-layer
+    # approach) — base_text_events is empty in this case.
+    # When active_word is off, only base_text_events is populated.
     all_events: list[tuple[int, float, float, str, str]] = []
     for ev in base_text_events:
         all_events.append((0, ev[0], ev[1], ev[2], ev[3]))
     for ev in pending_word_events:
-        all_events.append((1, ev[0], ev[1], ev[2], ev[3]))
+        all_events.append((0, ev[0], ev[1], ev[2], ev[3]))
 
-    # Process each layer independently — cross-layer overlaps are
-    # intentional (Layer 1 composites on top of Layer 0).
+    # Process each layer independently.
     for layer in (0, 1):
         layer_evs = [e for e in all_events if e[0] == layer]
         if not layer_evs:

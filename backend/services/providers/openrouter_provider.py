@@ -163,18 +163,18 @@ class OpenRouterProvider(AIProvider):
         self._preset_name = settings.OPENROUTER_PRESET
         preset = PRESETS.get(self._preset_name, PRESETS["free"])
 
-        if self._preset_name == "custom":
-            # User explicitly chose specific models via the recommended
-            # model picker — use saved settings values
-            self._vision_model = settings.OPENROUTER_VISION_MODEL or preset["vision"]
-            self._text_model = settings.OPENROUTER_TEXT_MODEL or preset["text"]
-            self._summary_model = settings.OPENROUTER_SUMMARY_MODEL or self._text_model
-        else:
-            # Known preset — always use preset values, ignoring any stale
-            # model IDs saved in .env from a previous configuration
-            self._vision_model = preset["vision"]
-            self._text_model = preset["text"]
-            self._summary_model = preset.get("summary", preset["text"])
+        # Always use the current model IDs from settings — these reflect
+        # the user's most recent selection (whether from a preset or custom
+        # model picker).  When a preset is selected via /providers/preset,
+        # the settings model IDs are updated to match.  When the user picks
+        # specific models via /providers/models/save, the preset switches
+        # to "custom" and the model IDs are set directly.
+        #
+        # Fall back to preset defaults only when settings are empty/unset
+        # (e.g. fresh container with no persisted user_settings.json).
+        self._vision_model = settings.OPENROUTER_VISION_MODEL or preset["vision"]
+        self._text_model = settings.OPENROUTER_TEXT_MODEL or preset["text"]
+        self._summary_model = settings.OPENROUTER_SUMMARY_MODEL or self._text_model
 
         # Store fallback model lists from preset.
         # Support both old single-fallback keys and new list keys.

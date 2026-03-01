@@ -273,18 +273,14 @@ async def provider_status():
     except Exception as e:
         statuses["ollama"] = {"status": "offline", "error": str(e)}
 
-    # OpenRouter
+    # OpenRouter — always read model IDs from settings (the provider does
+    # the same), falling back to preset defaults if settings are empty.
     if _key_is_set(settings.OPENROUTER_API_KEY):
         preset_name = settings.OPENROUTER_PRESET
         preset = PRESETS.get(preset_name, PRESETS["free"])
-        if preset_name == "custom":
-            vision_model = settings.OPENROUTER_VISION_MODEL
-            text_model = settings.OPENROUTER_TEXT_MODEL
-            summary_model = settings.OPENROUTER_SUMMARY_MODEL or text_model
-        else:
-            vision_model = preset["vision"]
-            text_model = preset["text"]
-            summary_model = preset.get("summary", preset["text"])
+        vision_model = settings.OPENROUTER_VISION_MODEL or preset["vision"]
+        text_model = settings.OPENROUTER_TEXT_MODEL or preset["text"]
+        summary_model = settings.OPENROUTER_SUMMARY_MODEL or text_model
         statuses["openrouter"] = {
             "status": "configured",
             "preset": preset_name,
@@ -427,12 +423,14 @@ async def _test_openrouter():
             preset_name = settings.OPENROUTER_PRESET
             preset = PRESETS.get(preset_name, PRESETS["free"])
 
-            # Build a list of models to try: preset text model, then fallbacks
-            test_models = [preset["text"]]
-            if preset.get("text_fallback"):
+            # Build a list of models to try: current text model from settings, then fallbacks
+            effective_text = settings.OPENROUTER_TEXT_MODEL or preset["text"]
+            test_models = [effective_text]
+            for fb in (preset.get("text_fallbacks") or []):
+                if fb not in test_models:
+                    test_models.append(fb)
+            if preset.get("text_fallback") and preset["text_fallback"] not in test_models:
                 test_models.append(preset["text_fallback"])
-            # openrouter/free is the ultimate fallback — it auto-routes to any available free model
-            test_models.append("openrouter/free")
 
             model_ok = False
             model_error = ""
@@ -464,14 +462,16 @@ async def _test_openrouter():
                     model_error = f"Timeout testing {test_model}"
                     logger.info(model_error)
 
+            effective_vision = settings.OPENROUTER_VISION_MODEL or preset["vision"]
+            effective_summary = settings.OPENROUTER_SUMMARY_MODEL or effective_text
             return {
                 "status": "connected" if model_ok else "key_valid_model_error",
                 "message": "API key validated and model responded successfully." if model_ok
                     else f"Key is valid but model test failed: {model_error}. Try refreshing models to find available ones.",
                 "preset": preset_name,
-                "vision_model": preset["vision"],
-                "summary_model": preset.get("summary", preset["text"]),
-                "text_model": preset["text"],
+                "vision_model": effective_vision,
+                "summary_model": effective_summary,
+                "text_model": effective_text,
                 "tested_model": tested_model,
                 "model_test_passed": model_ok,
                 **key_info,
@@ -641,27 +641,43 @@ class SavePresetRequest(BaseModel):
 
 @router.post("/providers/preset")
 async def save_preset(req: SavePresetRequest):
-    """Save the active preset (and optional custom models) to settings."""
+    """Save the active preset (and optional custom models) to settings.
+
+    When a known preset is selected (free/efficient/balanced/premium),
+    the model IDs in settings are updated to match the preset's defaults.
+    This ensures OpenRouterProvider always reads the correct models from
+    settings without needing to re-resolve the preset dict at init time.
+
+    When custom models are provided (req.vision_model, req.text_model),
+    those override the preset defaults.
+    """
+    from backend.services.providers.openrouter_provider import PRESETS as _PRESETS
+
     settings.OPENROUTER_PRESET = req.preset
-    if req.vision_model:
-        settings.OPENROUTER_VISION_MODEL = req.vision_model
-    if req.text_model:
-        settings.OPENROUTER_TEXT_MODEL = req.text_model
-    if req.summary_model:
-        settings.OPENROUTER_SUMMARY_MODEL = req.summary_model
+
+    # Resolve effective model IDs: explicit overrides > preset defaults
+    preset_dict = _PRESETS.get(req.preset, _PRESETS["free"])
+    vision_model = req.vision_model or preset_dict["vision"]
+    text_model = req.text_model or preset_dict["text"]
+    summary_model = req.summary_model or preset_dict.get("summary", text_model)
+
+    settings.OPENROUTER_VISION_MODEL = vision_model
+    settings.OPENROUTER_TEXT_MODEL = text_model
+    settings.OPENROUTER_SUMMARY_MODEL = summary_model
     _invalidate_status_cache()
 
     env_path = _find_env_file()
     if env_path:
         _upsert_env_var(env_path, "OPENROUTER_PRESET", req.preset)
-        if req.vision_model:
-            _upsert_env_var(env_path, "OPENROUTER_VISION_MODEL", req.vision_model)
-        if req.text_model:
-            _upsert_env_var(env_path, "OPENROUTER_TEXT_MODEL", req.text_model)
-        if req.summary_model:
-            _upsert_env_var(env_path, "OPENROUTER_SUMMARY_MODEL", req.summary_model)
+        _upsert_env_var(env_path, "OPENROUTER_VISION_MODEL", vision_model)
+        _upsert_env_var(env_path, "OPENROUTER_TEXT_MODEL", text_model)
+        _upsert_env_var(env_path, "OPENROUTER_SUMMARY_MODEL", summary_model)
 
     _persist_user_settings()
+    logger.info(
+        "Preset saved: %s (vision=%s, text=%s, summary=%s)",
+        req.preset, vision_model, text_model, summary_model,
+    )
     return {"status": "saved", "preset": req.preset}
 
 

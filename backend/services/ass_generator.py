@@ -230,12 +230,14 @@ def generate_ass(
     size_px = max(16, round(size_px * font_scale))
 
     # Scale outline width proportionally with font size.
-    # Apply 3x correction: CSS -webkit-text-stroke renders visually thicker
-    # than ASS Outline at the same pixel value due to anti-aliasing and
-    # sub-pixel rendering.  The frontend preview uses CSS at 1x and looks
-    # correct, so ASS must use 3x to produce the same visual thickness
-    # in the exported video.
-    scaled_outline_width = max(0, round(outline_width * font_scale * 3)) if outline_width > 0 else 0
+    # Apply 2x correction: CSS -webkit-text-stroke specifies the TOTAL
+    # stroke width (both sides of the glyph), but the frontend uses
+    # `scaledOlWidth * 2` — so CSS renders at 2x the logical value.
+    # ASS Outline renders on one side of the glyph at the specified width,
+    # so we need 2x to match the CSS visual thickness.
+    # (The old 3x factor was too thick — CSS text-stroke at `W*2` pixels
+    # matches ASS Outline at `W*2` pixels, not `W*3`.)
+    scaled_outline_width = max(0, round(outline_width * font_scale * 2)) if outline_width > 0 else 0
 
     # Horizontal margin from max_width_pct: (100% - max_width%) / 2 of output width
     margin_h = max(20, int(video_width * (100 - max_width_pct) / 100 / 2))
@@ -358,6 +360,10 @@ def generate_ass(
         "Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
     ]
 
+    # Un-multiplied outline width for shadow computation — must match the
+    # frontend which uses backendOlWidth (1x) not the CSS-corrected value.
+    base_outline_width = max(0, round(outline_width * font_scale)) if outline_width > 0 else 0
+
     # Compute outline/background style settings (same for all speakers)
     if background_enabled:
         back_color_ass = _hex_to_ass_color_with_alpha(background_color, background_opacity)
@@ -370,9 +376,11 @@ def generate_ass(
         back_color_ass = "&H80000000&"  # shadow color (semi-transparent black)
         border_style = 1
         ol_width = scaled_outline_width
-        # Scale shadow depth proportionally to outline width (matches CSS
-        # text-shadow which uses outline width for offset and blur radius)
-        shadow_depth = max(1, min(4, round(scaled_outline_width * 0.75))) if scaled_outline_width > 0 else 0
+        # Shadow depth matches frontend: proportional to the UN-MULTIPLIED
+        # outline width (backendOlWidth in ClipPreview.jsx:622).  The old
+        # code used scaled_outline_width (which includes the 2x/3x CSS
+        # correction), producing ~2-3x larger shadows than the preview.
+        shadow_depth = max(1, min(4, round(base_outline_width * 0.75))) if base_outline_width > 0 else 0
 
     # Create a style per speaker
     for sp in speakers_seen:
@@ -447,17 +455,32 @@ def generate_ass(
                 pending_word_events.append((clip_start, clip_end, style_name, event_text))
             elif seg_word_ts and len(seg_word_ts) == len(words):
                 # Real per-word timestamps from Whisper — use them directly.
-                # Shift each word start 80ms earlier for perceptual sync so
-                # the highlight leads the spoken audio slightly (matches
-                # the frontend anticipation offset).
+                #
+                # The frontend determines the active word at time T by:
+                #   adjusted = T + anticipation
+                #   for i in words: if adjusted < word[i].end → return i
+                #
+                # To produce the same result, we set each ASS word event to:
+                #   start = word[i].start - anticipation  (highlight leads audio)
+                #   end   = word[i].end - anticipation    (transition matches frontend)
+                #
+                # This way, at time T the ASS engine shows word i when:
+                #   word[i].start - ant <= T < word[i].end - ant
+                # Which is equivalent to:
+                #   word[i].start <= T + ant < word[i].end
+                # Matching the frontend's check: adjusted < word[i].end
+                #
+                # The gap-filling pass later will extend events to fill any
+                # gaps between words, keeping the last highlighted word visible.
                 _WORD_ANTICIPATION_S = 0.08
                 base_color = _hex_to_ass_color(speaker_color_map[speaker])
                 base_outline = style_outline_color
 
                 for word_idx in range(len(words)):
                     w_start, w_end, _ = seg_word_ts[word_idx]
-                    # Apply anticipation and clamp to segment bounds
+                    # Apply anticipation to BOTH start and end for 1:1 parity
                     w_start = max(w_start - _WORD_ANTICIPATION_S, clip_start)
+                    w_end = max(w_end - _WORD_ANTICIPATION_S, w_start + 0.01)
                     w_end = min(w_end, clip_end)
                     if word_idx == len(words) - 1:
                         w_end = clip_end
@@ -619,10 +642,29 @@ def generate_ass(
         """Convert seconds to centiseconds matching _format_ass_time output.
 
         _format_ass_time uses f'{s:05.2f}' which rounds to 2 decimal
-        places.  We replicate that rounding here so comparisons match
-        the actual formatted timestamps.
+        places using the C printf convention (round half away from zero).
+        Python's round() uses banker's rounding (round half to even),
+        which can produce different results at .5 boundaries:
+          round(2.5) → 2  (banker's)  vs  f-string '2.50' → 2  (same here)
+          round(3.5) → 4  (banker's)  vs  f-string '3.50' → 4  (same here)
+        But at centisecond boundaries like 1.005s:
+          round(1.005 * 100) = round(100.5) → 100  (banker's rounds to even)
+          f'{1.005:05.2f}' → '01.01'  (printf rounds 0.5 up → 101 cs)
+
+        To match _format_ass_time exactly, we replicate the printf-style
+        rounding by using the Decimal module or by formatting and parsing.
+        Simpler approach: format the seconds part the same way _format_ass_time
+        does and convert back.
         """
-        return int(round(t * 100))
+        if t < 0:
+            t = 0
+        s = t % 60
+        # Format with :.2f (same as _format_ass_time) and parse back
+        formatted = f"{s:.2f}"
+        cs_from_seconds = int(round(float(formatted) * 100))
+        # Add the minutes/hours contribution
+        total_minutes = int(t // 60)
+        return total_minutes * 6000 + cs_from_seconds
 
     # Collect all events as (layer, start, end, style, text) tuples.
     all_events: list[tuple[int, float, float, str, str]] = []
@@ -640,16 +682,20 @@ def generate_ass(
         layer_evs.sort(key=lambda e: e[1])
 
         # Clamp any residual overlaps at centisecond precision.
+        # Use _format_ass_time round-trip to compare at the exact precision
+        # that libass will see — this eliminates any float→string rounding
+        # edge cases that _to_cs might not perfectly capture.
         for i in range(len(layer_evs) - 1):
             _, s, e, st, tx = layer_evs[i]
             _, ns, _, _, _ = layer_evs[i + 1]
             e_cs = _to_cs(e)
             ns_cs = _to_cs(ns)
-            if e_cs > ns_cs:
-                # Overlap at display precision — clamp end to next start
-                layer_evs[i] = (layer, s, ns, st, tx)
-            elif e_cs == ns_cs and e > ns:
-                # Same centisecond but float overlap — clamp
+            if e_cs >= ns_cs:
+                # Overlap or touching at display precision — clamp end
+                # to next start so libass never renders both events.
+                # When e_cs == ns_cs, the formatted timestamps are
+                # identical, meaning libass would display both events
+                # at that centisecond — clamp to eliminate.
                 layer_evs[i] = (layer, s, ns, st, tx)
 
         # Emit events to ASS output

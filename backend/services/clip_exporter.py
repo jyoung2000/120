@@ -228,7 +228,8 @@ def _validate_ass_settings(
     expected_font_size = max(16, round(base_size_px * font_scale))
     expected_bold = ASS_FONT_WEIGHT_MAP.get(font_weight, 0)
     expected_alignment = 2  # Always bottom-center for absolute vertical positioning
-    scaled_outline_width = max(0, round(outline_width * font_scale * 3)) if outline_width > 0 else 0
+    scaled_outline_width = max(0, round(outline_width * font_scale * 2)) if outline_width > 0 else 0
+    base_outline_width = max(0, round(outline_width * font_scale)) if outline_width > 0 else 0
 
     # Expected margins
     expected_margin_h = max(20, int(video_width * (100 - max_width_pct) / 100 / 2))
@@ -248,7 +249,8 @@ def _validate_ass_settings(
         expected_border_style = 1
         expected_outline_colour = _hex_to_ass_color_with_alpha(outline_color, outline_opacity)
         expected_ol_width = scaled_outline_width
-        expected_shadow = max(1, min(4, round(scaled_outline_width * 0.75))) if scaled_outline_width > 0 else 0
+        # Shadow uses base (un-multiplied) outline width — matches frontend
+        expected_shadow = max(1, min(4, round(base_outline_width * 0.75))) if base_outline_width > 0 else 0
 
     # --- 1. PlayRes dimensions ---
     playres_x = re.search(r"PlayResX:\s*(\d+)", ass_content)
@@ -1482,18 +1484,31 @@ async def export_clip(
                     f.write(ass_content)
                 logger.info("ASS file written: %s (%d bytes)", ass_path, len(ass_content))
 
-                # Extract outline/border settings from the generated ASS
-                # content for force_style override.  This guarantees the
-                # outline renders in the exported video by passing it
-                # through FFmpeg's subtitles filter force_style mechanism,
-                # which directly modifies libass style objects and bypasses
-                # any rendering bugs in the ass filter.
-                subtitle_force_style = _extract_force_style_from_ass(ass_content)
-                if subtitle_force_style:
-                    logger.info(
-                        "Subtitle force_style for clip %s: %s",
-                        clip_id, subtitle_force_style,
-                    )
+                # NOTE: force_style is intentionally NOT used.
+                #
+                # The old approach extracted outline/border settings from the
+                # first ASS Style line and passed them as force_style to the
+                # subtitles filter.  This caused two problems:
+                #
+                # 1. force_style applies GLOBALLY to all styles, overriding
+                #    per-speaker PrimaryColour when use_speaker_colors=True
+                #    (it extracts OutlineColour from only the first style).
+                #
+                # 2. force_style modifies the style objects via
+                #    ass_process_force_style(), which can conflict with the
+                #    per-event inline override tags (\bord, \3c, \shad) that
+                #    are already prepended to every Dialogue event in
+                #    ass_generator.py.
+                #
+                # The inline override tags are sufficient to guarantee outline
+                # rendering in the exported video.  Removing force_style
+                # ensures the ASS file's carefully constructed per-event and
+                # per-speaker styling is preserved exactly as generated.
+                subtitle_force_style = ""
+                logger.info(
+                    "Subtitle rendering for clip %s: using inline override tags (no force_style)",
+                    clip_id,
+                )
 
                 # QA: validate ASS content matches the input settings so
                 # the exported video will match the frontend preview.

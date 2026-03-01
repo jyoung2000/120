@@ -161,7 +161,13 @@ class OpenRouterProvider(AIProvider):
             },
         )
         self._preset_name = settings.OPENROUTER_PRESET
-        preset = PRESETS.get(self._preset_name, PRESETS["free"])
+        # When preset is "custom" (user picked specific models), there's no
+        # entry in PRESETS — fall back to "balanced" for sensible fallback
+        # models.  The old code fell back to PRESETS["free"] whose `:free`
+        # model fallbacks return 401 "User not found" for many API keys
+        # (free-tier models use a different auth path on OpenRouter).
+        # "balanced" provides Google model fallbacks which work reliably.
+        preset = PRESETS.get(self._preset_name, PRESETS["balanced"])
 
         # Always use the current model IDs from settings — these reflect
         # the user's most recent selection (whether from a preset or custom

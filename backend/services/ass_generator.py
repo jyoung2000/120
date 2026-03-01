@@ -1,0 +1,674 @@
+"""Generate ASS (Advanced SubStation Alpha) subtitle files from transcript segments.
+
+ASS is used instead of SRT for FFmpeg subtitle burning because it supports:
+- Per-speaker color styling
+- Custom fonts and sizes
+- Precise positioning (top/center/bottom)
+- Margin control to prevent text from going off-screen
+- Word wrap mode to prevent mid-word breaks
+"""
+
+import logging
+
+from backend.models import TranscriptSegment
+
+logger = logging.getLogger(__name__)
+
+
+FONT_SIZE_MAP = {
+    "small": 22,
+    "medium": 30,
+    "large": 40,
+}
+
+FONT_WEIGHT_MAP = {
+    "normal": 0,
+    "bold": -1,  # ASS v4+ uses -1 for bold (1 is interpreted as weight=1, ultra-thin)
+}
+
+# ASS alignment: 2=bottom-center, 5=middle-center, 8=top-center
+POSITION_ALIGNMENT = {
+    "bottom": 2,
+    "center": 5,
+    "top": 8,
+}
+
+# Reference resolution — all sizes are designed for 1920x1080
+REF_W = 1920
+REF_H = 1080
+
+DEFAULT_MARGIN_H = 80
+DEFAULT_MARGIN_V = {
+    "bottom": 40,
+    "center": 0,
+    "top": 40,
+}
+
+# Safe-area limits: total margin (base + inset) per side must not consume
+# more than this fraction of the frame, guaranteeing a minimum text area.
+MIN_TEXT_AREA_W = 0.50  # subtitle text area >= 50% of output width
+MIN_TEXT_AREA_H = 0.60  # subtitle text area >= 60% of output height
+
+DEFAULT_SPEAKER_PALETTE = [
+    "#00D9FF",
+    "#F59E0B",
+    "#10B981",
+    "#A78BFA",
+    "#EF4444",
+    "#EC4899",
+]
+
+
+def _hex_to_ass_color(hex_color: str) -> str:
+    """Convert CSS hex color (#RRGGBB) to ASS color format (&H00BBGGRR&)."""
+    hex_color = hex_color.lstrip("#")
+    if len(hex_color) != 6:
+        return "&H00FFFFFF&"
+    r = hex_color[0:2]
+    g = hex_color[2:4]
+    b = hex_color[4:6]
+    return f"&H00{b}{g}{r}&".upper()
+
+
+def _hex_to_ass_color_with_alpha(hex_color: str, opacity_pct: int) -> str:
+    """Convert CSS hex color + opacity percentage to ASS color with alpha.
+
+    ASS alpha: 00 = fully opaque, FF = fully transparent.
+    opacity_pct: 0 = fully transparent, 100 = fully opaque.
+    """
+    hex_color = hex_color.lstrip("#")
+    if len(hex_color) != 6:
+        hex_color = "000000"
+    r = hex_color[0:2]
+    g = hex_color[2:4]
+    b = hex_color[4:6]
+    alpha = 255 - max(0, min(255, int(opacity_pct / 100 * 255)))
+    return f"&H{alpha:02X}{b}{g}{r}&".upper()
+
+
+def _format_ass_time(seconds: float) -> str:
+    """Convert seconds to ASS timestamp format: H:MM:SS.cc"""
+    if seconds < 0:
+        seconds = 0
+    h = int(seconds // 3600)
+    m = int((seconds % 3600) // 60)
+    s = seconds % 60
+    return f"{h}:{m:02d}:{s:05.2f}"
+
+
+def _sanitize_style_name(name: str) -> str:
+    """Make a speaker name safe for use as an ASS style name."""
+    return name.replace(",", "_").replace("\\", "_").replace("{", "_").replace("}", "_").strip()
+
+
+def split_segments_by_max_words(
+    segments: list[tuple],
+    max_words: int,
+) -> list[tuple]:
+    """Split subtitle segments so no segment exceeds max_words.
+
+    Each input tuple is (start, end, text, speaker, words) where words is optional.
+    Time is distributed proportionally by word count.
+    Segments with <= max_words words are returned unchanged.
+    """
+    if max_words <= 0:
+        return segments
+
+    result = []
+    for seg in segments:
+        start, end, text, speaker = seg[0], seg[1], seg[2], seg[3]
+        seg_words = seg[4] if len(seg) > 4 else None
+        words = text.split()
+        if len(words) <= max_words:
+            result.append(seg)
+            continue
+
+        total_words = len(words)
+        duration = end - start
+        current_time = start
+
+        for i in range(0, total_words, max_words):
+            chunk_words = words[i : i + max_words]
+            chunk_count = len(chunk_words)
+            chunk_duration = duration * (chunk_count / total_words)
+            chunk_end = current_time + chunk_duration
+
+            # Ensure the last chunk ends exactly at the segment end
+            if i + max_words >= total_words:
+                chunk_end = end
+
+            # Skip chunks that would be too short (< 0.1s)
+            if chunk_end - current_time >= 0.1:
+                # Slice word timestamps for this chunk
+                chunk_word_ts = None
+                if seg_words:
+                    chunk_word_ts = seg_words[i : i + max_words]
+                    if not chunk_word_ts:
+                        chunk_word_ts = None
+                result.append((
+                    current_time,
+                    chunk_end,
+                    " ".join(chunk_words),
+                    speaker,
+                    chunk_word_ts,
+                ))
+            current_time = chunk_end
+
+    return result
+
+
+def generate_ass(
+    segments: list[TranscriptSegment],
+    start_time: float,
+    end_time: float,
+    font: str = "DM Sans",
+    font_size: str | int | float = "medium",
+    font_weight: str = "bold",
+    font_color: str = "#FFFFFF",
+    position: str = "bottom",
+    speaker_colors: dict[str, str] | None = None,
+    use_speaker_colors: bool = True,
+    video_width: int = 1920,
+    video_height: int = 1080,
+    background_enabled: bool = False,
+    background_color: str = "#000000",
+    background_opacity: int = 75,
+    background_radius: int = 0,
+    outline_color: str = "#000000",
+    outline_opacity: int = 100,
+    outline_width: int = 2,
+    content_inset_v: int = 0,
+    content_inset_h: int = 0,
+    show_speaker_labels: bool = False,
+    max_width_pct: int = 90,
+    offset_v_pct: int = 4,
+    max_words: int = 0,
+    active_word_enabled: bool = False,
+    active_word_color: str = "#FFD700",
+    active_word_outline_color: str = "#000000",
+    active_word_bg_color: str = "#000000",
+    active_word_bg_opacity: int = 0,
+) -> str:
+    """Generate an ASS subtitle string from transcript segments within a time range.
+
+    Segments are filtered to the clip range and timestamps are offset to start at 0.
+    Each speaker gets a distinct style with their assigned color.
+
+    content_inset_v: extra vertical margin (px) to push subtitles into the actual
+    video content area when blur-background padding is present.  Only applied
+    for top/bottom positions — center stays centered.
+
+    content_inset_h: extra horizontal margin (px) to keep subtitles within the
+    actual video content area when blur-background pillarboxing is present.
+    Applied for all positions including center.
+    """
+    speaker_colors = speaker_colors or {}
+    if isinstance(font_size, (int, float)):
+        size_px = int(font_size)
+    else:
+        size_px = FONT_SIZE_MAP.get(font_size, 30)
+    # alignment is set below after margin_v computation (absolute vertical positioning)
+    bold_flag = FONT_WEIGHT_MAP.get(font_weight, 0)
+
+    # Clamp user-configurable values
+    max_width_pct = max(50, min(100, max_width_pct))
+    offset_v_pct = max(0, min(100, offset_v_pct))
+
+    # Clamp outline values
+    outline_width = max(0, min(10, outline_width))
+    outline_opacity = max(0, min(100, outline_opacity))
+
+    # Scale proportionally to the output resolution.
+    # Use min-dimension ratio so text stays at designed size for all standard
+    # aspect ratios (all have min dim = 1080) and scales correctly for
+    # non-standard resolutions.
+    font_scale = min(video_width, video_height) / min(REF_W, REF_H)
+
+    # Font size in the ASS file must match the frontend preview exactly.
+    # The frontend computes: max(16, Math.round(basePx * fontScale)), so
+    # the backend must use round() (not int/truncate) for parity.
+    size_px = max(16, round(size_px * font_scale))
+
+    # Scale outline width proportionally with font size.
+    # Apply 3x correction: CSS -webkit-text-stroke renders visually thicker
+    # than ASS Outline at the same pixel value due to anti-aliasing and
+    # sub-pixel rendering.  The frontend preview uses CSS at 1x and looks
+    # correct, so ASS must use 3x to produce the same visual thickness
+    # in the exported video.
+    scaled_outline_width = max(0, round(outline_width * font_scale * 3)) if outline_width > 0 else 0
+
+    # Horizontal margin from max_width_pct: (100% - max_width%) / 2 of output width
+    margin_h = max(20, int(video_width * (100 - max_width_pct) / 100 / 2))
+
+    # Vertical margin from offset_v_pct — absolute position (0=bottom, 100=top).
+    # Always use bottom-center alignment so MarginV measures from bottom edge.
+    alignment = 2  # Override position-based alignment for absolute vertical control
+    margin_v = int(video_height * offset_v_pct / 100)
+
+    # When blur-background mode is active, push subtitles inward so they
+    # sit on the actual video content rather than floating in the blur zone.
+    if content_inset_h > 0:
+        margin_h += content_inset_h
+    if content_inset_v > 0:
+        margin_v += content_inset_v
+
+    # Safe-area cap for horizontal margin only
+    max_margin_h = int(video_width * (1 - MIN_TEXT_AREA_W) / 2)
+    margin_h = min(margin_h, max_margin_h)
+
+    # Filter segments to clip range
+    clip_segments = []
+    for seg in segments:
+        if seg.end <= start_time or seg.start >= end_time:
+            continue
+        clip_start = max(seg.start, start_time) - start_time
+        clip_end = min(seg.end, end_time) - start_time
+        if clip_end - clip_start < 0.1:
+            continue
+        # Carry per-word timestamps (offset to clip-relative time) for active word timing
+        seg_words = None
+        if hasattr(seg, "words") and seg.words:
+            seg_words = [
+                (w.start - start_time, w.end - start_time, w.word)
+                for w in seg.words
+                if w.end > (max(seg.start, start_time)) and w.start < (min(seg.end, end_time))
+            ]
+            if not seg_words:
+                seg_words = None
+        clip_segments.append((clip_start, clip_end, seg.text.strip(), seg.speaker, seg_words))
+
+    # Apply max_words splitting
+    if max_words > 0:
+        clip_segments = split_segments_by_max_words(clip_segments, max_words)
+
+    # --- Eliminate inter-segment temporal overlap ---
+    # Transcript segments (especially from Whisper) often have overlapping
+    # timestamps.  When two ASS Dialogue events overlap in time, libass
+    # renders BOTH simultaneously and stacks them vertically, causing the
+    # visible "bouncing up and down" subtitle effect.
+    #
+    # Fix: sort by start time and clamp each segment's end so it never
+    # exceeds the next segment's start.  This mirrors the frontend, which
+    # only renders one active segment at any given playback time.
+    if len(clip_segments) > 1:
+        clip_segments.sort(key=lambda s: s[0])
+        clamped = []
+        for i, seg in enumerate(clip_segments):
+            cs, ce, txt, sp = seg[0], seg[1], seg[2], seg[3]
+            sw = seg[4] if len(seg) > 4 else None
+            if i < len(clip_segments) - 1:
+                next_start = clip_segments[i + 1][0]
+                if ce > next_start:
+                    ce = next_start
+            if ce - cs >= 0.05:
+                clamped.append((cs, ce, txt, sp, sw))
+        clip_segments = clamped
+
+    if not clip_segments:
+        return ""
+
+    # Per-speaker speech rate (words per second) for active word timing.
+    # Must match the frontend computeSpeakerRates() algorithm exactly.
+    speaker_rates: dict[str, float] = {}
+    if active_word_enabled:
+        _sp_stats: dict[str, dict] = {}
+        for seg in clip_segments:
+            cs, ce, tx, sp = seg[0], seg[1], seg[2], seg[3]
+            wc = len(tx.split())
+            dur = ce - cs
+            if dur <= 0 or wc == 0:
+                continue
+            if sp not in _sp_stats:
+                _sp_stats[sp] = {"words": 0, "time": 0.0}
+            _sp_stats[sp]["words"] += wc
+            _sp_stats[sp]["time"] += dur
+        for sp, s in _sp_stats.items():
+            speaker_rates[sp] = s["words"] / s["time"] if s["time"] > 0 else 3.0
+
+    # Collect unique speakers and assign colors
+    speakers_seen = []
+    for seg in clip_segments:
+        sp = seg[3]
+        if sp not in speakers_seen:
+            speakers_seen.append(sp)
+
+    speaker_color_map = {}
+    for i, sp in enumerate(speakers_seen):
+        if not use_speaker_colors:
+            # Toggle off: all speakers use the uniform font color
+            speaker_color_map[sp] = font_color
+        elif sp in speaker_colors:
+            speaker_color_map[sp] = speaker_colors[sp]
+        else:
+            speaker_color_map[sp] = DEFAULT_SPEAKER_PALETTE[i % len(DEFAULT_SPEAKER_PALETTE)]
+
+    # Build ASS header
+    lines = [
+        "[Script Info]",
+        "Title: ClipAI Subtitles",
+        "ScriptType: v4.00+",
+        f"PlayResX: {video_width}",
+        f"PlayResY: {video_height}",
+        "WrapStyle: 1",
+        "ScaledBorderAndShadow: no",
+        "",
+        "[V4+ Styles]",
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
+        "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, "
+        "Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
+    ]
+
+    # Compute outline/background style settings (same for all speakers)
+    if background_enabled:
+        back_color_ass = _hex_to_ass_color_with_alpha(background_color, background_opacity)
+        style_outline_color = back_color_ass  # same as box so border blends in
+        border_style = 3
+        ol_width = max(int(4 * font_scale), 2)  # minimum padding for the box
+        shadow_depth = 0
+    else:
+        style_outline_color = _hex_to_ass_color_with_alpha(outline_color, outline_opacity)
+        back_color_ass = "&H80000000&"  # shadow color (semi-transparent black)
+        border_style = 1
+        ol_width = scaled_outline_width
+        # Scale shadow depth proportionally to outline width (matches CSS
+        # text-shadow which uses outline width for offset and blur radius)
+        shadow_depth = max(1, min(4, round(scaled_outline_width * 0.75))) if scaled_outline_width > 0 else 0
+
+    # Create a style per speaker
+    for sp in speakers_seen:
+        color_hex = speaker_color_map[sp]
+        ass_color = _hex_to_ass_color(color_hex)
+        style_name = _sanitize_style_name(sp)
+
+        lines.append(
+            f"Style: {style_name},{font},{size_px},{ass_color},&H000000FF&,{style_outline_color},{back_color_ass},"
+            f"{bold_flag},0,0,0,100,100,0,0,{border_style},{ol_width},{shadow_depth},{alignment},{margin_h},{margin_h},{margin_v},1"
+        )
+
+    lines.append("")
+    lines.append("[Events]")
+    lines.append("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text")
+
+    # Pre-compute active word ASS colors
+    if active_word_enabled:
+        aw_color = _hex_to_ass_color(active_word_color)
+        aw_outline = _hex_to_ass_color(active_word_outline_color)
+        aw_bg = None
+        if active_word_bg_opacity > 0:
+            aw_bg = _hex_to_ass_color_with_alpha(
+                active_word_bg_color, active_word_bg_opacity
+            )
+
+    # Explicit border override tags for every Dialogue event.
+    # Even though the Style already sets Outline, some libass builds and
+    # FFmpeg versions lose the outline through style caching / fallback.
+    # Prepending explicit \bord + \3c + \shad tags per-event guarantees
+    # the outline is always rendered in the exported video.
+    if not background_enabled and ol_width > 0:
+        bord_tag = f"\\bord{ol_width}\\shad{shadow_depth}\\3c{style_outline_color}"
+    else:
+        bord_tag = ""
+
+    # Add dialogue events
+    # Two-layer architecture for active-word mode:
+    #   Layer 0 = base text for each segment (always visible, full duration)
+    #   Layer 1 = per-word highlight events overlaid on top
+    # This guarantees subtitles never disappear between words or during gaps.
+    #
+    # For standard mode: single-layer events on Layer 0 as before.
+    pending_word_events: list[tuple[float, float, str, str]] = []
+    base_text_events: list[tuple[float, float, str, str]] = []
+
+    for seg in clip_segments:
+        clip_start, clip_end, text, speaker = seg[0], seg[1], seg[2], seg[3]
+        seg_word_ts = seg[4] if len(seg) > 4 else None
+        style_name = _sanitize_style_name(speaker)
+        safe_text = text.replace("\\", "\\\\").replace("{", "\\{").replace("}", "\\}")
+
+        if active_word_enabled:
+            # --- Layer 0: base text event for full segment duration ---
+            # Shows ALL words in the speaker's base color with outline.
+            # This event is ALWAYS visible, providing a stable backdrop.
+            prefix = f"{speaker}: " if show_speaker_labels and speaker else ""
+            base_override = f"{{{bord_tag}}}" if bord_tag else ""
+            base_event_text = f"{prefix}{base_override}{safe_text}"
+            base_text_events.append((clip_start, clip_end, style_name, base_event_text))
+
+            # --- Layer 1: per-word highlight events ---
+            words = safe_text.split()
+            if len(words) <= 1:
+                # Single word — just color the whole event with active word color
+                aw_tags = f"\\c{aw_color}\\3c{aw_outline}"
+                if bord_tag:
+                    aw_tags += f"\\bord{ol_width}\\shad{shadow_depth}"
+                if aw_bg:
+                    aw_tags += f"\\4c{aw_bg}"
+                event_text = f"{prefix}{{{aw_tags}}}{safe_text}"
+                pending_word_events.append((clip_start, clip_end, style_name, event_text))
+            elif seg_word_ts and len(seg_word_ts) == len(words):
+                # Real per-word timestamps from Whisper — use them directly.
+                # Shift each word start 80ms earlier for perceptual sync so
+                # the highlight leads the spoken audio slightly (matches
+                # the frontend anticipation offset).
+                _WORD_ANTICIPATION_S = 0.08
+                base_color = _hex_to_ass_color(speaker_color_map[speaker])
+                base_outline = style_outline_color
+
+                for word_idx in range(len(words)):
+                    w_start, w_end, _ = seg_word_ts[word_idx]
+                    # Apply anticipation and clamp to segment bounds
+                    w_start = max(w_start - _WORD_ANTICIPATION_S, clip_start)
+                    w_end = min(w_end, clip_end)
+                    if word_idx == len(words) - 1:
+                        w_end = clip_end
+                    if w_end - w_start < 0.01:
+                        continue
+
+                    # Build text with inline overrides on the active word
+                    parts = []
+                    for i, w in enumerate(words):
+                        if i == word_idx:
+                            tags = f"\\c{aw_color}\\3c{aw_outline}"
+                            if ol_width > 0:
+                                tags += f"\\bord{ol_width}\\shad{shadow_depth}"
+                            if aw_bg:
+                                tags += f"\\4c{aw_bg}"
+                            parts.append(f"{{{tags}}}{w}")
+                        else:
+                            tags = f"\\c{base_color}\\3c{base_outline}"
+                            if ol_width > 0:
+                                tags += f"\\bord{ol_width}\\shad{shadow_depth}"
+                            parts.append(f"{{{tags}}}{w}")
+
+                    event_text = prefix + " ".join(parts)
+                    pending_word_events.append((w_start, w_end, style_name, event_text))
+            else:
+                # Fallback: character-proportional estimation
+                # Uses punctuation-aware, speaker-rate-scaled timing that
+                # matches the frontend getCurrentWordIndex() algorithm so
+                # the exported video looks identical to the preview.
+                _BASE_OVERHEAD_S = 0.04
+                _ANTICIPATION_S = 0.0  # must match frontend ClipPreview _ANTICIPATION_S for 1:1 parity
+                _PUNCT_PAUSE = {
+                    ",": 0.12, ";": 0.14, ":": 0.10,
+                    ".": 0.18, "!": 0.18, "?": 0.20,
+                    "\u2014": 0.10, "\u2013": 0.08,
+                }
+                base_color = _hex_to_ass_color(speaker_color_map[speaker])
+                base_outline = style_outline_color
+                total_chars = sum(len(w) for w in words)
+                if total_chars == 0:
+                    total_chars = 1
+                duration = clip_end - clip_start
+
+                # Per-speaker speech rate scaling
+                speaker_wps = speaker_rates.get(speaker, 3.0) if speaker_rates else 3.0
+                rate_scale = max(0.6, min(1.6, 3.0 / speaker_wps))
+                anticipation = _ANTICIPATION_S * rate_scale
+
+                # Punctuation pauses per word
+                punct_pauses = []
+                for w in words:
+                    last_char = w[-1] if w else ""
+                    punct_pauses.append(_PUNCT_PAUSE.get(last_char, 0.0) * rate_scale)
+                total_punct = sum(punct_pauses)
+
+                # Base overhead + punctuation
+                base_overhead = _BASE_OVERHEAD_S * rate_scale * len(words)
+                total_pause = base_overhead + total_punct
+
+                # Remaining time is character-proportional
+                char_time = max(duration - total_pause, duration * 0.45)
+                pause_scale = (duration - char_time) / max(total_pause, 0.01)
+
+                current_time = clip_start
+                for word_idx in range(len(words)):
+                    char_dur = char_time * (len(words[word_idx]) / total_chars)
+                    pause = (_BASE_OVERHEAD_S * rate_scale + punct_pauses[word_idx]) * pause_scale
+                    word_dur = char_dur + pause
+                    word_end = current_time + word_dur
+                    if word_idx == len(words) - 1:
+                        word_end = clip_end
+                    # Skip very short word slots (below ASS centisecond resolution)
+                    if word_end - current_time < 0.01:
+                        current_time = word_end
+                        continue
+
+                    # Shift event start earlier by anticipation offset
+                    shifted_start = max(clip_start, current_time - anticipation)
+
+                    # Build text with inline overrides on the active word
+                    parts = []
+                    for i, w in enumerate(words):
+                        if i == word_idx:
+                            tags = f"\\c{aw_color}\\3c{aw_outline}"
+                            if ol_width > 0:
+                                tags += f"\\bord{ol_width}\\shad{shadow_depth}"
+                            if aw_bg:
+                                tags += f"\\4c{aw_bg}"
+                            parts.append(f"{{{tags}}}{w}")
+                        else:
+                            tags = f"\\c{base_color}\\3c{base_outline}"
+                            if ol_width > 0:
+                                tags += f"\\bord{ol_width}\\shad{shadow_depth}"
+                            parts.append(f"{{{tags}}}{w}")
+
+                    event_text = prefix + " ".join(parts)
+                    pending_word_events.append((shifted_start, word_end, style_name, event_text))
+                    current_time = word_end
+        else:
+            # Standard: single event with plain text + explicit outline override
+            if show_speaker_labels and speaker:
+                safe_text = f"{speaker}: {safe_text}"
+            bord_override = f"{{{bord_tag}}}" if bord_tag else ""
+            base_text_events.append((clip_start, clip_end, style_name, f"{bord_override}{safe_text}"))
+
+    # --- Layer 0: base text events ---
+    # Fill small inter-segment gaps so text never disappears briefly.
+    if base_text_events:
+        base_text_events.sort(key=lambda e: e[0])
+        for i in range(len(base_text_events) - 1):
+            ev_start, ev_end, ev_style, ev_text = base_text_events[i]
+            next_start = base_text_events[i + 1][0]
+            if ev_end > next_start:
+                # Overlap: clamp to eliminate bouncing on Layer 0
+                base_text_events[i] = (ev_start, next_start, ev_style, ev_text)
+            elif next_start - ev_end < 0.15:
+                # Small gap: extend to fill — keeps text visible between segments
+                base_text_events[i] = (ev_start, next_start, ev_style, ev_text)
+
+    # --- Layer 1: per-word highlight events (active word mode) ---
+    # Eliminate temporal overlap AND fill ALL gaps between word events.
+    # Overlap: when multiple word events overlap in time, libass renders
+    # them all simultaneously and stacks them vertically ("bouncing").
+    # Gaps: any gap causes Layer 1 to disappear, falling back to Layer 0
+    # (base text with no highlighting), making the active word appear to
+    # stop updating.
+    #
+    # Fix: sort by start time, then for each consecutive pair:
+    #   - If overlapping: clamp event N's end to event N+1's start
+    #   - Any gap: ALWAYS extend event N's end to fill it — this keeps
+    #     the last highlighted word visible until the next word starts,
+    #     matching how the frontend preview works.
+    if pending_word_events:
+        pending_word_events.sort(key=lambda e: e[0])
+        for i in range(len(pending_word_events) - 1):
+            ev_start, ev_end, ev_style, ev_text = pending_word_events[i]
+            next_start = pending_word_events[i + 1][0]
+            if ev_end >= next_start:
+                # Overlap: clamp to eliminate bouncing
+                pending_word_events[i] = (ev_start, next_start, ev_style, ev_text)
+            else:
+                # Gap: always extend to fill — keeps the last highlighted
+                # word visible until the next word event starts
+                pending_word_events[i] = (ev_start, next_start, ev_style, ev_text)
+
+    # ═══════════════════════════════════════════════════════════════════
+    # FINAL OVERLAP ELIMINATION — unified pass at centisecond precision
+    # ═══════════════════════════════════════════════════════════════════
+    # All upstream clamping operates at float precision.  ASS timestamps
+    # have centisecond resolution (H:MM:SS.cc), so float values that are
+    # < 0.005 apart can round to the same centisecond — or worse, round
+    # so that event N's formatted end > event N+1's formatted start,
+    # creating a 1-centisecond overlap that makes libass stack them.
+    #
+    # This final pass operates at the OUTPUT precision (centiseconds)
+    # to guarantee no two same-layer events overlap at the resolution
+    # that libass actually sees.
+    def _to_cs(t: float) -> int:
+        """Convert seconds to centiseconds matching _format_ass_time output.
+
+        _format_ass_time uses f'{s:05.2f}' which rounds to 2 decimal
+        places.  We replicate that rounding here so comparisons match
+        the actual formatted timestamps.
+        """
+        return int(round(t * 100))
+
+    # Collect all events as (layer, start, end, style, text) tuples.
+    all_events: list[tuple[int, float, float, str, str]] = []
+    for ev in base_text_events:
+        all_events.append((0, ev[0], ev[1], ev[2], ev[3]))
+    for ev in pending_word_events:
+        all_events.append((1, ev[0], ev[1], ev[2], ev[3]))
+
+    # Process each layer independently — cross-layer overlaps are
+    # intentional (Layer 1 composites on top of Layer 0).
+    for layer in (0, 1):
+        layer_evs = [e for e in all_events if e[0] == layer]
+        if not layer_evs:
+            continue
+        layer_evs.sort(key=lambda e: e[1])
+
+        # Clamp any residual overlaps at centisecond precision.
+        for i in range(len(layer_evs) - 1):
+            _, s, e, st, tx = layer_evs[i]
+            _, ns, _, _, _ = layer_evs[i + 1]
+            e_cs = _to_cs(e)
+            ns_cs = _to_cs(ns)
+            if e_cs > ns_cs:
+                # Overlap at display precision — clamp end to next start
+                layer_evs[i] = (layer, s, ns, st, tx)
+            elif e_cs == ns_cs and e > ns:
+                # Same centisecond but float overlap — clamp
+                layer_evs[i] = (layer, s, ns, st, tx)
+
+        # Emit events to ASS output
+        for _, ev_s, ev_e, ev_st, ev_tx in layer_evs:
+            if _to_cs(ev_e) - _to_cs(ev_s) >= 1:  # at least 1 centisecond
+                lines.append(
+                    f"Dialogue: {layer},{_format_ass_time(ev_s)},"
+                    f"{_format_ass_time(ev_e)},{ev_st},,0,0,0,,{ev_tx}"
+                )
+
+    logger.info(
+        "ASS generated: font=%s size=%s(%dpx) weight=%s color=%s pos=%s "
+        "bg=%s outline=%dpx speakers=%d segments=%d active_word=%s "
+        "max_words=%d res=%dx%d",
+        font, font_size, size_px, font_weight, font_color, position,
+        f"yes({background_color}@{background_opacity}%)" if background_enabled else "no",
+        ol_width, len(speakers_seen), len(clip_segments),
+        "yes" if active_word_enabled else "no",
+        max_words, video_width, video_height,
+    )
+
+    return "\n".join(lines) + "\n"

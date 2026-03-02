@@ -371,11 +371,11 @@ def test_ass_outline_mode():
 
     check("BorderStyle=1 (outline)", sp1.get("BorderStyle") == "1",
           f"got {sp1.get('BorderStyle')}")
-    # outline_width=3 scaled by font_scale=1.0 at 1080p with 3x factor → round(3*1.0*3)=9
-    check("Outline width=9 (3x factor)", sp1.get("Outline") == "9",
+    # outline_width=3 scaled by font_scale=1.0 at 1080p → round(3*1.0)=3
+    check("Outline width=3", sp1.get("Outline") == "3",
           f"got {sp1.get('Outline')}")
-    # Shadow = max(1, min(4, round(9*0.75))) = max(1, min(4, 7)) = 4
-    check("Shadow depth=4 (outline mode with width>0)", sp1.get("Shadow") == "4",
+    # Shadow = max(1, min(4, round(3*0.75))) = max(1, min(4, 2)) = 2
+    check("Shadow depth=2 (outline mode with width>0)", sp1.get("Shadow") == "2",
           f"got {sp1.get('Shadow')}")
 
     expected_ol_color = _hex_to_ass_color_with_alpha("#FF0000", 80)
@@ -486,21 +486,21 @@ def test_ass_vertical_offset():
 
 def test_ass_outline_width_scaling():
     print("\n--- ASS: Outline width scaling ---")
-    # At 1080p: font_scale=1.0, outline_width=5 → round(5*1.0*3)=15
+    # At 1080p: font_scale=1.0, outline_width=5 → round(5*1.0)=5
     result = generate_ass(
         segments=SAMPLE_SEGMENTS, start_time=10.0, end_time=25.0,
         outline_width=5, video_width=1920, video_height=1080,
     )
     ol = parse_ass_styles(result).get("Speaker 1", {}).get("Outline", "?")
-    check("Outline width 5 at 1080p → 15", ol == "15", f"got {ol}")
+    check("Outline width 5 at 1080p → 5", ol == "5", f"got {ol}")
 
-    # At 9:16 (1080x1920): font_scale=1.0, outline_width=5 → round(5*1.0*3)=15
+    # At 9:16 (1080x1920): font_scale=1.0, outline_width=5 → round(5*1.0)=5
     result2 = generate_ass(
         segments=SAMPLE_SEGMENTS, start_time=10.0, end_time=25.0,
         outline_width=5, video_width=1080, video_height=1920,
     )
     ol2 = parse_ass_styles(result2).get("Speaker 1", {}).get("Outline", "?")
-    check("Outline width 5 at 9:16 → 15 (with 3x factor)", ol2 == "15", f"got {ol2}")
+    check("Outline width 5 at 9:16 → 5", ol2 == "5", f"got {ol2}")
 
 
 def test_ass_multiple_aspect_ratios():
@@ -671,14 +671,14 @@ def test_ass_value_clamping():
     margin_l2 = int(styles2.get("Speaker 1", {}).get("MarginL", 0))
     check("max_width=10 clamped → MarginL=480", margin_l2 == 480, f"got {margin_l2}")
 
-    # outline_width > 10 → clamped to 10, then scaled with 3x: round(10*1.0*3)=30
+    # outline_width > 10 → clamped to 10, then scaled: round(10*1.0)=10
     result3 = generate_ass(
         segments=SAMPLE_SEGMENTS, start_time=10.0, end_time=25.0,
         outline_width=25,
     )
     styles3 = parse_ass_styles(result3)
     ol = int(styles3.get("Speaker 1", {}).get("Outline", 0))
-    check("outline_width=25 clamped to 10 then 3x=30", ol == 30, f"got {ol}")
+    check("outline_width=25 clamped to 10", ol == 10, f"got {ol}")
 
     # outline_width < 0 → clamped to 0
     result4 = generate_ass(

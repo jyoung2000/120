@@ -3,6 +3,7 @@ import { useParams, Link } from 'react-router-dom';
 import { showToast } from '../components/Toast';
 import { buildSubjectKeyframes, smoothKeyframes, interpolateSubjectX, isDynamic, computeClipSubjectX } from '../utils/subjectTracking';
 import ClipSettingsPanel from '../components/ClipSettingsPanel';
+import TranscriptViewer from '../components/TranscriptViewer';
 import useResponsive from '../hooks/useResponsive';
 import useEncodingManager from '../hooks/useEncodingManager';
 
@@ -210,6 +211,18 @@ export default function ClipSEO() {
       .finally(() => setLoading(false));
   }, [jobId, clipId]);
 
+  const fetchJob = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/jobs/${jobId}`);
+      if (res.ok) {
+        const data = await res.json();
+        setJob(data);
+        const found = (data.clips || []).find((c) => c.id === parseInt(clipId));
+        if (found) setClip(found);
+      }
+    } catch {}
+  }, [jobId, clipId]);
+
   // Track fullscreen changes
   useEffect(() => {
     const onFsChange = () => setIsFullscreen(!!document.fullscreenElement);
@@ -276,6 +289,11 @@ export default function ClipSEO() {
     },
     [job?.scenes, startTime, endTime],
   );
+
+  const clipTimeRange = useMemo(() => {
+    if (startTime === null || endTime === null) return null;
+    return { start: startTime, end: endTime };
+  }, [startTime, endTime]);
 
   // Determine if cropping is needed for the selected aspect ratio
   const isCrop = useMemo(() => {
@@ -425,12 +443,7 @@ export default function ClipSEO() {
         body: JSON.stringify({ speaker_names: { [oldName]: trimmed } }),
       });
       if (res.ok) {
-        const data = await res.json();
-        setJob((prev) => ({
-          ...prev,
-          transcript: data.transcript,
-          speaker_names: data.speaker_names,
-        }));
+        await fetchJob();
         showToast(`Renamed "${oldName}" to "${trimmed}"`, 'success');
       }
     } catch {
@@ -1068,6 +1081,37 @@ export default function ClipSEO() {
                   );
                 })}
               </div>
+            </div>
+          )}
+
+          {/* Clip Transcript */}
+          {job?.transcript?.length > 0 && clipTimeRange && (
+            <div style={sectionStyle}>
+              <div style={{
+                fontSize: 13,
+                fontFamily: 'var(--font-mono)',
+                fontWeight: 700,
+                color: 'var(--text-primary)',
+                marginBottom: 10,
+                textTransform: 'uppercase',
+                letterSpacing: '0.05em',
+              }}>
+                Clip Transcript
+              </div>
+              <TranscriptViewer
+                transcript={job.transcript}
+                timeRange={clipTimeRange}
+                onSeek={(time) => {
+                  const video = videoRef.current;
+                  if (video) {
+                    video.currentTime = time;
+                    setCurrentTime(time);
+                  }
+                }}
+                jobId={jobId}
+                onSpeakerRenamed={fetchJob}
+                onTranscriptUpdated={fetchJob}
+              />
             </div>
           )}
 

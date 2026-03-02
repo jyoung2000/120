@@ -34,7 +34,7 @@ function toTXT(segments) {
   return segments.map((seg) => `[${formatTime(seg.start)}] ${seg.speaker}: ${seg.text}`).join('\n');
 }
 
-export default function TranscriptViewer({ transcript, onSeek, jobId, onSpeakerRenamed, onTranscriptUpdated }) {
+export default function TranscriptViewer({ transcript, onSeek, jobId, onSpeakerRenamed, onTranscriptUpdated, timeRange }) {
   const { isMobile } = useResponsive();
   const [search, setSearch] = useState('');
   const [editingSpeaker, setEditingSpeaker] = useState(null);
@@ -70,11 +70,18 @@ export default function TranscriptViewer({ transcript, onSeek, jobId, onSpeakerR
     [speakers]
   );
 
+  const timeFiltered = useMemo(() => {
+    if (!timeRange) return transcript;
+    return transcript.filter((seg) =>
+      seg.start < timeRange.end && seg.end > timeRange.start
+    );
+  }, [transcript, timeRange]);
+
   const filtered = useMemo(() => {
-    if (!search.trim()) return transcript;
+    if (!search.trim()) return timeFiltered;
     const q = search.toLowerCase();
-    return transcript.filter((seg) => seg.text.toLowerCase().includes(q) || seg.speaker.toLowerCase().includes(q));
-  }, [transcript, search]);
+    return timeFiltered.filter((seg) => seg.text.toLowerCase().includes(q) || seg.speaker.toLowerCase().includes(q));
+  }, [timeFiltered, search]);
 
   const download = (content, filename) => {
     const blob = new Blob([content], { type: 'text/plain' });
@@ -675,7 +682,7 @@ export default function TranscriptViewer({ transcript, onSeek, jobId, onSpeakerR
         )}
 
         {/* Insert at the very end */}
-        {jobId && transcript.length > 0 && (
+        {jobId && transcript.length > 0 && !timeRange && (
           <div style={{ padding: '8px 0', textAlign: 'center' }}>
             <button
               onClick={() => openInsertForm(transcript.length - 1)}

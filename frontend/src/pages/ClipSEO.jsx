@@ -1084,37 +1084,6 @@ export default function ClipSEO() {
             </div>
           )}
 
-          {/* Clip Transcript */}
-          {job?.transcript?.length > 0 && clipTimeRange && (
-            <div style={sectionStyle}>
-              <div style={{
-                fontSize: 13,
-                fontFamily: 'var(--font-mono)',
-                fontWeight: 700,
-                color: 'var(--text-primary)',
-                marginBottom: 10,
-                textTransform: 'uppercase',
-                letterSpacing: '0.05em',
-              }}>
-                Clip Transcript
-              </div>
-              <TranscriptViewer
-                transcript={job.transcript}
-                timeRange={clipTimeRange}
-                onSeek={(time) => {
-                  const video = videoRef.current;
-                  if (video) {
-                    video.currentTime = time;
-                    setCurrentTime(time);
-                  }
-                }}
-                jobId={jobId}
-                onSpeakerRenamed={fetchJob}
-                onTranscriptUpdated={fetchJob}
-              />
-            </div>
-          )}
-
           {/* Export Button */}
           <div style={sectionStyle}>
             {exporting ? (
@@ -1366,6 +1335,37 @@ export default function ClipSEO() {
                 </button>
               )}
             </>
+          )}
+
+          {/* Clip Transcript */}
+          {job?.transcript?.length > 0 && clipTimeRange && (
+            <div style={sectionStyle}>
+              <div style={{
+                fontSize: 13,
+                fontFamily: 'var(--font-mono)',
+                fontWeight: 700,
+                color: 'var(--text-primary)',
+                marginBottom: 10,
+                textTransform: 'uppercase',
+                letterSpacing: '0.05em',
+              }}>
+                Clip Transcript
+              </div>
+              <TranscriptViewer
+                transcript={job.transcript}
+                timeRange={clipTimeRange}
+                onSeek={(time) => {
+                  const video = videoRef.current;
+                  if (video) {
+                    video.currentTime = time;
+                    setCurrentTime(time);
+                  }
+                }}
+                jobId={jobId}
+                onSpeakerRenamed={fetchJob}
+                onTranscriptUpdated={fetchJob}
+              />
+            </div>
           )}
         </div>
       </div>

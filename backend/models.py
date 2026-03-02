@@ -138,6 +138,7 @@ class ExportRequest(BaseModel):
     subtitles_enabled: bool = False
     subtitle_settings: Optional[SubtitleSettings] = None
     export_quality: str = "1080p"  # "720p" | "1080p" | "4k"
+    callback_url: str = ""  # optional webhook URL — POST results when export completes
 
 
 class FullVideoExportRequest(BaseModel):

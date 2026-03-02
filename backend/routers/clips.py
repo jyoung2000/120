@@ -10,6 +10,17 @@ from pydantic import BaseModel
 from backend import database
 from backend.config import settings
 from backend.models import ExportRequest, FullVideoExportRequest, GenerateClipsRequest, UpdateClipTimesRequest, UpdateClipTitleRequest
+from backend.models_api import (
+    ExportStartedResponse,
+    ExportCancelResponse,
+    ClipTitleResponse,
+    ClipTimesResponse,
+    ClipDeleteResponse,
+    BulkDeleteResponse,
+    ClipGenerationResponse,
+    ExportedClipItem,
+    SEOResponse,
+)
 from backend.services.clip_exporter import export_clip
 from backend.services.pipeline import broadcast_ws
 
@@ -30,7 +41,7 @@ _export_cancel_events: dict[str, asyncio.Event] = {}
 _CLIP_DETECTION_TIMEOUT = 900
 
 
-@router.post("/jobs/{job_id}/export-clip")
+@router.post("/jobs/{job_id}/export-clip", response_model=ExportStartedResponse)
 async def export_clip_endpoint(
     job_id: str,
     req: ExportRequest,
@@ -176,6 +187,12 @@ async def export_clip_endpoint(
                 m = re.search(r'\.\.\.\s*(\d+)%', msg)
                 if m:
                     pct = int(m.group(1))
+                # Cache progress for HTTP polling endpoint
+                try:
+                    from backend.routers.agent import _export_progress_cache
+                    _export_progress_cache[export_key] = pct
+                except ImportError:
+                    pass
                 await broadcast_ws(job_id, {
                     "type": "status",
                     "status": "exporting",
@@ -225,13 +242,27 @@ async def export_clip_endpoint(
                 })
                 await database.save_job(j)
 
+            download_url = f"/api/files/{job_id}/clips/{os.path.basename(output_path)}"
             await broadcast_ws(job_id, {
                 "type": "export_complete",
                 "clip_id": req.clip_id,
-                "download_url": f"/api/files/{job_id}/clips/{os.path.basename(output_path)}",
+                "download_url": download_url,
                 "message": f"Clip {req.clip_id} exported in {elapsed}s [{req.export_quality or '1080p'}]",
                 "qa_passed": True,
             })
+
+            # Send webhook callback if configured
+            if req.callback_url:
+                from backend.routers.agent import _send_callback
+                await _send_callback(req.callback_url, {
+                    "event": "export_complete",
+                    "job_id": job_id,
+                    "clip_id": req.clip_id,
+                    "download_url": download_url,
+                    "filename": os.path.basename(output_path),
+                    "duration": round(req.end - req.start, 2),
+                    "export_quality": req.export_quality or "1080p",
+                })
         except asyncio.CancelledError:
             await broadcast_ws(job_id, {
                 "type": "error",
@@ -251,7 +282,7 @@ async def export_clip_endpoint(
     return {"export_id": export_key, "status": "exporting"}
 
 
-@router.post("/jobs/{job_id}/cancel-export/{clip_id}")
+@router.post("/jobs/{job_id}/cancel-export/{clip_id}", response_model=ExportCancelResponse)
 async def cancel_export_endpoint(job_id: str, clip_id: int):
     """Cancel an in-progress clip export."""
     export_key = f"{job_id}_{clip_id}"
@@ -273,7 +304,7 @@ async def cancel_export_endpoint(job_id: str, clip_id: int):
     return {"export_id": export_key, "status": "cancelled"}
 
 
-@router.post("/jobs/{job_id}/export-full-video")
+@router.post("/jobs/{job_id}/export-full-video", response_model=ExportStartedResponse)
 async def export_full_video_endpoint(job_id: str, req: FullVideoExportRequest):
     """Export the entire video with clip settings (aspect ratio, subtitles, subject tracking) applied."""
     job = await database.load_job(job_id)
@@ -406,7 +437,7 @@ async def export_full_video_endpoint(job_id: str, req: FullVideoExportRequest):
     return {"export_id": export_key, "status": "exporting"}
 
 
-@router.get("/active-exports")
+@router.get("/active-exports", response_model=list[ActiveExportItem])
 async def list_active_exports():
     """List all currently active export tasks."""
     active = []
@@ -422,7 +453,7 @@ async def list_active_exports():
     return active
 
 
-@router.put("/jobs/{job_id}/clips/{clip_id}/title")
+@router.put("/jobs/{job_id}/clips/{clip_id}/title", response_model=ClipTitleResponse)
 async def update_clip_title(job_id: str, clip_id: int, req: UpdateClipTitleRequest):
     """Update the title of a clip candidate."""
     job = await database.load_job(job_id)
@@ -438,7 +469,7 @@ async def update_clip_title(job_id: str, clip_id: int, req: UpdateClipTitleReque
     return {"job_id": job_id, "clip_id": clip_id, "title": req.title}
 
 
-@router.put("/jobs/{job_id}/clips/{clip_id}/times")
+@router.put("/jobs/{job_id}/clips/{clip_id}/times", response_model=ClipTimesResponse)
 async def update_clip_times(job_id: str, clip_id: int, req: UpdateClipTimesRequest):
     """Update the start/end times of a clip candidate."""
     job = await database.load_job(job_id)
@@ -465,7 +496,7 @@ async def update_clip_times(job_id: str, clip_id: int, req: UpdateClipTimesReque
     }
 
 
-@router.delete("/jobs/{job_id}/clips/{clip_id}")
+@router.delete("/jobs/{job_id}/clips/{clip_id}", response_model=ClipDeleteResponse)
 async def delete_clip(job_id: str, clip_id: int):
     """Delete a single clip candidate and any exported files for it."""
     job = await database.load_job(job_id)
@@ -502,7 +533,7 @@ class DeleteClipsRequest(BaseModel):
     clip_ids: list[int]
 
 
-@router.post("/jobs/{job_id}/delete-clips")
+@router.post("/jobs/{job_id}/delete-clips", response_model=BulkDeleteResponse)
 async def delete_clips_bulk(job_id: str, req: DeleteClipsRequest):
     """Delete multiple clip candidates and their exported files."""
     job = await database.load_job(job_id)
@@ -539,7 +570,7 @@ async def delete_clips_bulk(job_id: str, req: DeleteClipsRequest):
     }
 
 
-@router.post("/jobs/{job_id}/generate-clips")
+@router.post("/jobs/{job_id}/generate-clips", response_model=ClipGenerationResponse)
 async def generate_clips_endpoint(
     job_id: str,
     req: GenerateClipsRequest,
@@ -833,7 +864,7 @@ async def _cancel_existing_generation(job_id: str):
     _clip_cancel_events.pop(job_id, None)
 
 
-@router.get("/jobs/{job_id}/clips")
+@router.get("/jobs/{job_id}/clips", response_model=list[ExportedClipItem])
 async def list_clips(job_id: str):
     job = await database.load_job(job_id)
     if not job:

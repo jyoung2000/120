@@ -9,6 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, Response
 
 from backend.routers import upload, jobs, clips, fonts, presets, settings as settings_router, ws
+from backend.routers import agent as agent_router
 
 LOG_FILE = "/data/logs/app.log"
 
@@ -27,7 +28,17 @@ logging.getLogger().addHandler(_file_handler)
 
 logger = logging.getLogger("clipai")
 
-app = FastAPI(title="ClipAI", version="1.0.0")
+app = FastAPI(
+    title="ClipAI",
+    version="1.0.0",
+    description=(
+        "AI-powered video analysis and viral clip generation platform. "
+        "Supports video upload, transcription, scene detection, viral clip detection, "
+        "subtitle burn-in, and multi-quality export with subject tracking."
+    ),
+    docs_url="/docs",
+    redoc_url="/redoc",
+)
 
 
 @app.on_event("startup")
@@ -64,6 +75,46 @@ async def _startup_preload():
     else:
         logger.info("Ollama not in fallback chain — skipping background model pull")
 
+    # Wire SSE bridge: push WebSocket broadcast events to SSE subscribers
+    _install_sse_bridge()
+
+
+def _install_sse_bridge():
+    """Monkey-patch the pipeline broadcast_ws to also push events to SSE queues.
+
+    This allows HTTP-only clients (AI agents) to receive the same real-time
+    events that WebSocket clients get, via the GET /api/jobs/{job_id}/events
+    SSE endpoint.
+    """
+    from backend.services import pipeline
+    from backend.routers.agent import notify_sse_subscribers, _export_progress_cache
+    import re as _re
+
+    _original_broadcast = pipeline.broadcast_ws
+
+    async def _broadcast_with_sse(job_id: str, message: dict):
+        # Call original WebSocket broadcast
+        await _original_broadcast(job_id, message)
+        # Also push to SSE subscribers
+        await notify_sse_subscribers(job_id, message)
+        # Cache export progress for polling endpoint
+        if message.get("type") == "status" and message.get("status") == "exporting":
+            # Try to extract progress from the message
+            pct = message.get("progress", 0)
+            if not pct:
+                m = _re.search(r'(\d+)%', message.get("message", ""))
+                if m:
+                    pct = int(m.group(1))
+            # Determine export key from context — use job_id as prefix
+            # The export_key format is "{job_id}_{clip_id}" but we don't
+            # have clip_id here. Use a job-level key for now.
+            for key in list(_export_progress_cache.keys()):
+                if key.startswith(f"{job_id}_"):
+                    _export_progress_cache[key] = pct
+
+    pipeline.broadcast_ws = _broadcast_with_sse
+
+
 # Register API routers
 app.include_router(upload.router)
 app.include_router(jobs.router)
@@ -72,6 +123,7 @@ app.include_router(fonts.router)
 app.include_router(presets.router)
 app.include_router(settings_router.router)
 app.include_router(ws.router)
+app.include_router(agent_router.router)
 
 # Ensure data dirs exist
 for d in ["/data/uploads", "/data/outputs", "/data/logs", "/data/fonts"]:
@@ -110,6 +162,15 @@ for _fname, _syspath in SYSTEM_FONT_PATHS.items():
             pass
 if _symlinked:
     logger.info("Symlinked %d system fonts into /data/fonts for FFmpeg fontsdir", _symlinked)
+
+
+# ── Explicit OpenAPI spec endpoint ──────────────────────────────────
+# Registered before the SPA catch-all so /openapi.json is not hijacked.
+
+@app.get("/openapi.json", include_in_schema=False)
+async def openapi_spec():
+    """Return the OpenAPI JSON spec. Required for AI agent tool discovery."""
+    return app.openapi()
 
 
 @app.get("/api/files/{job_id}/{path:path}")
@@ -180,8 +241,15 @@ static_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static")
 if os.path.isdir(static_dir):
     app.mount("/assets", StaticFiles(directory=os.path.join(static_dir, "assets")), name="assets")
 
+    # Reserved paths that FastAPI handles natively — do NOT serve index.html for these
+    _RESERVED_PATHS = {"docs", "redoc", "openapi.json"}
+
     @app.get("/{path:path}")
     async def serve_spa(path: str):
+        # Let FastAPI's built-in handlers serve /docs, /redoc, /openapi.json
+        if path in _RESERVED_PATHS:
+            # Return 404 so FastAPI falls through to its own registered routes
+            return Response(status_code=404)
         # Serve index.html for all non-API, non-asset routes (SPA routing)
         file_path = os.path.join(static_dir, path)
         if path and os.path.isfile(file_path):

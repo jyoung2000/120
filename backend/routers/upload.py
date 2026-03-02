@@ -10,6 +10,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 
 from backend.config import settings
 from backend.models import JobResult, JobStatus
+from backend.models_api import UploadResponse
 from backend import database
 from backend.services.pipeline import run_analysis
 
@@ -242,7 +243,7 @@ def _cleanup(path: str):
         pass
 
 
-@router.post("/upload")
+@router.post("/upload", response_model=UploadResponse)
 async def upload_video(
     request: Request,
     background_tasks: BackgroundTasks,

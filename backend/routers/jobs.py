@@ -10,6 +10,21 @@ from pydantic import BaseModel
 
 from backend import database
 from backend.models import FrameData, JobStatus, SceneDescription, TranscriptSegment, WordTimestamp
+from backend.models_api import (
+    AnalysisStartedResponse,
+    JobDeleteResponse,
+    JobStatusResponse,
+    RecenterResponse,
+    ReanalyzeResponse,
+    SceneAddResponse,
+    SceneDeleteResponse,
+    SceneUpdateResponse,
+    TranscriptDeleteResponse,
+    TranscriptInsertResponse,
+    TranscriptSegmentResponse,
+    WordRefreshResponse,
+    UploadResponse,
+)
 from backend.services.pipeline import run_analysis, request_cancel, is_cancel_requested
 from backend.services.srt_generator import generate_srt
 
@@ -51,7 +66,7 @@ async def get_job(job_id: str):
     return job.model_dump(mode="json")
 
 
-@router.post("/jobs/{job_id}/cancel")
+@router.post("/jobs/{job_id}/cancel", response_model=JobStatusResponse)
 async def cancel_job(job_id: str):
     """Cancel a running or queued job."""
     job = await database.load_job(job_id)
@@ -86,7 +101,7 @@ async def cancel_job(job_id: str):
     return {"job_id": job_id, "status": "cancelled"}
 
 
-@router.delete("/jobs/{job_id}")
+@router.delete("/jobs/{job_id}", response_model=JobDeleteResponse)
 async def delete_job(job_id: str):
     job = await database.load_job(job_id)
     if not job:
@@ -98,7 +113,7 @@ async def delete_job(job_id: str):
     return {"job_id": job_id, "deleted": True}
 
 
-@router.post("/jobs/{job_id}/analyze")
+@router.post("/jobs/{job_id}/analyze", response_model=AnalysisStartedResponse)
 async def trigger_analysis(job_id: str, background_tasks: BackgroundTasks):
     job = await database.load_job(job_id)
     if not job:
@@ -479,7 +494,7 @@ async def delete_scene(job_id: str, scene_index: int):
 
 # --- Subject tracking re-center ---
 
-@router.post("/jobs/{job_id}/recenter-subject")
+@router.post("/jobs/{job_id}/recenter-subject", response_model=RecenterResponse)
 async def recenter_subject(job_id: str, background_tasks: BackgroundTasks):
     """Center the crop on the subject's detected position.
 
@@ -670,7 +685,7 @@ async def _reanalyze_subject_tracking(job_id: str, center_after: bool = False):
         })
 
 
-@router.post("/jobs/{job_id}/reanalyze-subject")
+@router.post("/jobs/{job_id}/reanalyze-subject", response_model=ReanalyzeResponse)
 async def reanalyze_subject(job_id: str, background_tasks: BackgroundTasks):
     """Re-run AI subject tracking analysis on existing frames. Updates subject_x values."""
     job = await database.load_job(job_id)

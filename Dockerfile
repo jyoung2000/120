@@ -59,7 +59,8 @@ WORKDIR /app
 # Install Python dependencies
 COPY backend/requirements.txt .
 RUN pip install --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+    pip install --no-cache-dir -r requirements.txt && \
+    pip install --no-cache-dir yt-dlp
 
 # Copy backend source
 COPY backend/ ./backend/

@@ -7,6 +7,49 @@ import TranscriptViewer from '../components/TranscriptViewer';
 import useResponsive from '../hooks/useResponsive';
 import useEncodingManager from '../hooks/useEncodingManager';
 
+class SEOErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false };
+  }
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{
+          padding: '48px 24px', textAlign: 'center',
+          background: 'var(--bg-panel)', border: '1px solid var(--border)',
+          borderRadius: 'var(--radius-md)',
+        }}>
+          <div style={{ fontSize: 36, marginBottom: 16, opacity: 0.3 }}>&#9888;&#65039;</div>
+          <h3 style={{ fontSize: 16, marginBottom: 8, color: 'var(--text-secondary)' }}>
+            SEO display error
+          </h3>
+          <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 16 }}>
+            Something went wrong displaying the SEO data.
+          </p>
+          <button
+            onClick={() => {
+              this.setState({ hasError: false });
+              if (this.props.onReset) this.props.onReset();
+            }}
+            style={{
+              padding: '8px 20px', background: 'var(--accent-cyan)', color: 'var(--bg-base)',
+              border: 'none', borderRadius: 'var(--radius-sm)',
+              fontSize: 13, fontWeight: 600, cursor: 'pointer',
+            }}
+          >
+            Try Again
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 function formatDuration(seconds) {
   if (!seconds && seconds !== 0) return '0:00';
   const m = Math.floor(seconds / 60);
@@ -204,6 +247,10 @@ export default function ClipSEO() {
             setEndTime(found.end_time);
             setStartText(formatDuration(found.start_time));
             setEndText(formatDuration(found.end_time));
+            // Hydrate persisted SEO data if available
+            if (found.seo) {
+              setSeo(found.seo);
+            }
           }
         }
       })
@@ -1120,6 +1167,7 @@ export default function ClipSEO() {
 
         {/* Right column: SEO content */}
         <div style={{ flex: '1 1 auto', minWidth: isMobile ? 0 : 300 }}>
+          <SEOErrorBoundary onReset={() => setSeo(null)}>
           {!seo ? (
             <div style={{ ...sectionStyle, textAlign: 'center', padding: '48px 24px' }}>
               {generating ? (
@@ -1178,7 +1226,7 @@ export default function ClipSEO() {
                   </div>
                   <button
                     onClick={() => copyToClipboard(
-                      `${seo.title}\n\n${seo.description}\n\n${seo.youtube_shorts_description ? `YouTube Shorts:\n${seo.youtube_shorts_description}\n\n` : ''}${seo.youtube_description ? `YouTube Description:\n${seo.youtube_description}\n\n` : ''}${(seo.tags || []).join(' ')}`,
+                      `${seo.title || ''}\n\n${seo.description || ''}\n\n${seo.youtube_shorts_description ? `YouTube Shorts:\n${seo.youtube_shorts_description}\n\n` : ''}${seo.youtube_description ? `YouTube Description:\n${seo.youtube_description}\n\n` : ''}${(Array.isArray(seo.tags) ? seo.tags : []).join(' ')}`,
                       'all'
                     )}
                     style={{
@@ -1199,12 +1247,12 @@ export default function ClipSEO() {
                   <div style={{ fontSize: 10, fontFamily: 'var(--font-mono)', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.1em' }}>
                     Title
                   </div>
-                  <button onClick={() => copyToClipboard(seo.title, 'title')} style={copyBtnStyle('title')}>
+                  <button onClick={() => copyToClipboard(seo.title || '', 'title')} style={copyBtnStyle('title')}>
                     {copied === 'title' ? 'Copied' : 'Copy'}
                   </button>
                 </div>
                 <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--text-primary)', lineHeight: 1.4 }}>
-                  {seo.title}
+                  {seo.title || 'Untitled'}
                 </div>
               </div>
 
@@ -1214,12 +1262,12 @@ export default function ClipSEO() {
                   <div style={{ fontSize: 10, fontFamily: 'var(--font-mono)', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.1em' }}>
                     Caption
                   </div>
-                  <button onClick={() => copyToClipboard(seo.description, 'desc')} style={copyBtnStyle('desc')}>
+                  <button onClick={() => copyToClipboard(seo.description || '', 'desc')} style={copyBtnStyle('desc')}>
                     {copied === 'desc' ? 'Copied' : 'Copy'}
                   </button>
                 </div>
                 <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-                  {seo.description}
+                  {seo.description || 'No description generated'}
                 </div>
               </div>
 
@@ -1263,12 +1311,12 @@ export default function ClipSEO() {
                   <div style={{ fontSize: 10, fontFamily: 'var(--font-mono)', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.1em' }}>
                     Tags
                   </div>
-                  <button onClick={() => copyToClipboard((seo.tags || []).join(' '), 'tags')} style={copyBtnStyle('tags')}>
+                  <button onClick={() => copyToClipboard((Array.isArray(seo.tags) ? seo.tags : []).join(' '), 'tags')} style={copyBtnStyle('tags')}>
                     {copied === 'tags' ? 'Copied' : 'Copy All'}
                   </button>
                 </div>
                 <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                  {(seo.tags || []).map((tag, i) => (
+                  {(Array.isArray(seo.tags) ? seo.tags : []).map((tag, i) => (
                     <span
                       key={i}
                       onClick={() => copyToClipboard(tag, `tag-${i}`)}
@@ -1339,6 +1387,7 @@ export default function ClipSEO() {
               )}
             </>
           )}
+          </SEOErrorBoundary>
 
           {/* Clip Transcript */}
           {job?.transcript?.length > 0 && clipTimeRange && (

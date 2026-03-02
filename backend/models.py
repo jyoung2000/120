@@ -57,6 +57,7 @@ class ClipCandidate(BaseModel):
     hook_text: str
     why_this_works: str
     clip_focus: Optional[str] = None  # The focus topic used to generate this clip, if any
+    seo: Optional[dict] = None  # Persisted SEO metadata from AI generation
 
 
 class VideoSummary(BaseModel):

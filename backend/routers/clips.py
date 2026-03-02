@@ -932,10 +932,20 @@ async def generate_seo_endpoint(job_id: str, clip_id: int):
             "message": f"SEO generated via {provider}",
         })
 
+        # Persist SEO to job record so it survives page navigation
+        seo_data = seo.model_dump()
+        j = await database.load_job(job_id)
+        if j:
+            for c in j.clips:
+                if c.id == clip_id:
+                    c.seo = seo_data
+                    break
+            await database.save_job(j)
+
         return {
             "clip_id": clip_id,
             "provider": provider,
-            "seo": seo.model_dump(),
+            "seo": seo_data,
         }
     except Exception as e:
         logger.exception(f"SEO generation failed for {job_id}/{clip_id}")

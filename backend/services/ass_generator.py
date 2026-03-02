@@ -232,14 +232,14 @@ def generate_ass(
     # the backend must use round() (not int/truncate) for parity.
     size_px = max(16, round(size_px * font_scale))
 
-    # Scale outline width proportionally with font size.
-    # CSS `-webkit-text-stroke: Wpx` with `paint-order: stroke fill` produces
-    # W/2 visible pixels of border on each side (the fill covers the inner
-    # half).  The frontend uses `scaledOlWidth * 2` as the total CSS stroke,
-    # so visible per-side = scaledOlWidth = round(olWidth * fontScale).
-    # ASS `\bord` specifies the border expanding outward from the glyph —
-    # it IS the per-side width — so it should equal the same 1x value.
-    scaled_outline_width = max(0, round(outline_width * font_scale)) if outline_width > 0 else 0
+    # Scale outline width with rendering compensation.
+    # CSS `-webkit-text-stroke` with anti-aliasing produces visually
+    # thicker outlines than ASS `\bord` at the same pixel value.
+    # The 2x multiplier compensates so the exported video matches the
+    # preview player.  The CSS preview intentionally stays at 1x because
+    # browser anti-aliasing already makes it appear at the ~2x visual
+    # thickness that libass needs explicitly.
+    scaled_outline_width = max(0, round(outline_width * font_scale * 2)) if outline_width > 0 else 0
 
     # Horizontal margin from max_width_pct: (100% - max_width%) / 2 of output width
     margin_h = max(20, int(video_width * (100 - max_width_pct) / 100 / 2))

@@ -335,12 +335,21 @@ export default function Analysis() {
         try {
           const msg = JSON.parse(evt.data);
           if (msg.type === 'status' || msg.type === 'complete') {
-            setJob((prev) => prev ? {
-              ...prev,
-              status: msg.status || prev.status,
-              progress: msg.progress ?? prev.progress,
-              progress_message: msg.message || prev.progress_message,
-            } : prev);
+            // Skip transient operation statuses ('exporting', 'generating_seo')
+            // that don't reflect the analysis pipeline state.  These are handled
+            // by their own UI components (useEncodingManager, SEO panel).
+            // Updating job.status with these causes the analysis progress bar
+            // to blink: WS sets 'exporting' → bar appears → fetchJob resets
+            // to 'complete' → bar disappears → next WS → repeat.
+            const isTransientOp = msg.status === 'exporting' || msg.status === 'generating_seo';
+            if (!isTransientOp) {
+              setJob((prev) => prev ? {
+                ...prev,
+                status: msg.status || prev.status,
+                progress: msg.progress ?? prev.progress,
+                progress_message: msg.message || prev.progress_message,
+              } : prev);
+            }
             // Track clip generation state from status messages
             if (msg.status === 'detecting_clips') {
               setIsGeneratingClips(true);

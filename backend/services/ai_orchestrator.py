@@ -89,6 +89,13 @@ class AIOrchestrator:
             p = _build_provider(name)
             if p:
                 self._providers[name] = p
+        # Always include Ollama as last-resort local fallback even if not
+        # in the user's configured chain.  The Ollama container runs
+        # alongside the app and works when all cloud keys are invalid.
+        if "ollama" not in self._providers:
+            p = _build_provider("ollama")
+            if p:
+                self._providers["ollama"] = p
 
     # Rough cost per 1K tokens by provider (input+output blended average)
     _COST_PER_1K_TOKENS = {
@@ -121,6 +128,10 @@ class AIOrchestrator:
                 chain.append(self._providers[name])
             elif name in self._providers:
                 skipped.append(name)
+        # Append Ollama as last-resort if available but not in configured chain
+        if "ollama" in self._providers and not self._circuit_breaker.is_degraded("ollama"):
+            if not any(p.provider_name == "ollama" for p in chain):
+                chain.append(self._providers["ollama"])
         chain_names = [p.provider_name for p in chain]
         if skipped:
             logger.info("Active provider chain: %s (degraded: %s)", chain_names, skipped)

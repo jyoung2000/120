@@ -39,7 +39,10 @@ MODEL_CACHE_TTL = 86400  # 24 hours
 # Persistent user settings — saved so they survive container/process restarts.
 USER_SETTINGS_PATH = os.path.join(_DATA_DIR, "user_settings.json")
 
-_PLACEHOLDER_KEYS = {"sk-or-...", "sk-ant-...", "AIza...", "gsk_...", ""}
+_PLACEHOLDER_KEYS = {
+    "sk-or-...", "sk-ant-...", "AIza...", "gsk_...", "",
+    "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",
+}
 
 # Keys that are persisted to user_settings.json
 _PERSISTABLE_KEYS = [
@@ -133,6 +136,13 @@ def _restore_user_settings():
                     logger.info(f"Restored setting: {key}")
                     restored += 1
         logger.info(f"Restored {restored} persisted settings from {USER_SETTINGS_PATH}")
+        # Ensure ollama is always in the fallback chain as last-resort.
+        # Older persisted settings may not include it, and when all cloud
+        # API keys are expired/invalid, ollama is the only working provider.
+        chain = settings.AI_FALLBACK_CHAIN
+        if "ollama" not in chain:
+            settings.AI_FALLBACK_CHAIN = f"{chain},ollama"
+            logger.info("Auto-appended ollama to fallback chain as last-resort")
     except Exception as e:
         logger.warning(f"Failed to restore user settings from {USER_SETTINGS_PATH}: {e}")
 

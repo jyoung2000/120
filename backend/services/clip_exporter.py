@@ -228,7 +228,7 @@ def _validate_ass_settings(
     expected_font_size = max(16, round(base_size_px * font_scale))
     expected_bold = ASS_FONT_WEIGHT_MAP.get(font_weight, 0)
     expected_alignment = 2  # Always bottom-center for absolute vertical positioning
-    scaled_outline_width = max(0, round(outline_width * font_scale)) if outline_width > 0 else 0
+    scaled_outline_width = max(0, round(outline_width * font_scale * 2)) if outline_width > 0 else 0
 
     # Expected margins
     expected_margin_h = max(20, int(video_width * (100 - max_width_pct) / 100 / 2))

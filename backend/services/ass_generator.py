@@ -218,6 +218,9 @@ def generate_ass(
     outline_width = max(0, min(10, outline_width))
     outline_opacity = max(0, min(100, outline_opacity))
 
+    # Coerce settings that may arrive as strings from JSON
+    background_enabled = bool(background_enabled)
+
     # Scale proportionally to the output resolution.
     # Use min-dimension ratio so text stays at designed size for all standard
     # aspect ratios (all have min dim = 1080) and scales correctly for
@@ -230,14 +233,13 @@ def generate_ass(
     size_px = max(16, round(size_px * font_scale))
 
     # Scale outline width proportionally with font size.
-    # Apply 2x correction: CSS -webkit-text-stroke specifies the TOTAL
-    # stroke width (both sides of the glyph), but the frontend uses
-    # `scaledOlWidth * 2` — so CSS renders at 2x the logical value.
-    # ASS Outline renders on one side of the glyph at the specified width,
-    # so we need 2x to match the CSS visual thickness.
-    # (The old 3x factor was too thick — CSS text-stroke at `W*2` pixels
-    # matches ASS Outline at `W*2` pixels, not `W*3`.)
-    scaled_outline_width = max(0, round(outline_width * font_scale * 2)) if outline_width > 0 else 0
+    # CSS `-webkit-text-stroke: Wpx` with `paint-order: stroke fill` produces
+    # W/2 visible pixels of border on each side (the fill covers the inner
+    # half).  The frontend uses `scaledOlWidth * 2` as the total CSS stroke,
+    # so visible per-side = scaledOlWidth = round(olWidth * fontScale).
+    # ASS `\bord` specifies the border expanding outward from the glyph —
+    # it IS the per-side width — so it should equal the same 1x value.
+    scaled_outline_width = max(0, round(outline_width * font_scale)) if outline_width > 0 else 0
 
     # Horizontal margin from max_width_pct: (100% - max_width%) / 2 of output width
     margin_h = max(20, int(video_width * (100 - max_width_pct) / 100 / 2))
@@ -360,10 +362,6 @@ def generate_ass(
         "Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
     ]
 
-    # Un-multiplied outline width for shadow computation — must match the
-    # frontend which uses backendOlWidth (1x) not the CSS-corrected value.
-    base_outline_width = max(0, round(outline_width * font_scale)) if outline_width > 0 else 0
-
     # Compute outline/background style settings (same for all speakers)
     if background_enabled:
         back_color_ass = _hex_to_ass_color_with_alpha(background_color, background_opacity)
@@ -376,11 +374,9 @@ def generate_ass(
         back_color_ass = "&H80000000&"  # shadow color (semi-transparent black)
         border_style = 1
         ol_width = scaled_outline_width
-        # Shadow depth matches frontend: proportional to the UN-MULTIPLIED
-        # outline width (backendOlWidth in ClipPreview.jsx:622).  The old
-        # code used scaled_outline_width (which includes the 2x/3x CSS
-        # correction), producing ~2-3x larger shadows than the preview.
-        shadow_depth = max(1, min(4, round(base_outline_width * 0.75))) if base_outline_width > 0 else 0
+        # Shadow depth matches frontend: proportional to outline width
+        # (backendOlWidth in ClipPreview.jsx:622).
+        shadow_depth = max(1, min(4, round(scaled_outline_width * 0.75))) if scaled_outline_width > 0 else 0
 
     # Create a style per speaker
     for sp in speakers_seen:
@@ -412,7 +408,9 @@ def generate_ass(
     # FFmpeg versions lose the outline through style caching / fallback.
     # Prepending explicit \bord + \3c + \shad tags per-event guarantees
     # the outline is always rendered in the exported video.
-    if not background_enabled and ol_width > 0:
+    # Always emit even when ol_width==0 (\bord0\shad0) to prevent libass
+    # from inheriting unexpected border state from the Style definition.
+    if not background_enabled:
         bord_tag = f"\\bord{ol_width}\\shad{shadow_depth}\\3c{style_outline_color}"
     else:
         bord_tag = ""
@@ -450,9 +448,7 @@ def generate_ass(
             words = safe_text.split()
             if len(words) <= 1:
                 # Single word — just color the whole event with active word color
-                aw_tags = f"\\c{aw_color}\\3c{aw_outline}"
-                if bord_tag:
-                    aw_tags += f"\\bord{ol_width}\\shad{shadow_depth}"
+                aw_tags = f"\\c{aw_color}\\3c{aw_outline}\\bord{ol_width}\\shad{shadow_depth}"
                 if aw_bg:
                     aw_tags += f"\\4c{aw_bg}"
                 event_text = f"{prefix}{{{aw_tags}}}{safe_text}"
@@ -476,7 +472,7 @@ def generate_ass(
                 #
                 # The gap-filling pass later will extend events to fill any
                 # gaps between words, keeping the last highlighted word visible.
-                _WORD_ANTICIPATION_S = 0.08
+                _WORD_ANTICIPATION_S = 0.10
                 base_color = _hex_to_ass_color(speaker_color_map[speaker])
                 base_outline = style_outline_color
 
@@ -495,20 +491,18 @@ def generate_ass(
                     if w_end - w_start < 0.01:
                         continue
 
-                    # Build text with inline overrides on the active word
+                    # Build text with inline overrides on the active word.
+                    # Every word gets explicit \bord and \shad to guarantee
+                    # outline rendering regardless of libass style caching.
                     parts = []
                     for i, w in enumerate(words):
                         if i == word_idx:
-                            tags = f"\\c{aw_color}\\3c{aw_outline}"
-                            if ol_width > 0:
-                                tags += f"\\bord{ol_width}\\shad{shadow_depth}"
+                            tags = f"\\c{aw_color}\\3c{aw_outline}\\bord{ol_width}\\shad{shadow_depth}"
                             if aw_bg:
                                 tags += f"\\4c{aw_bg}"
                             parts.append(f"{{{tags}}}{w}")
                         else:
-                            tags = f"\\c{base_color}\\3c{base_outline}"
-                            if ol_width > 0:
-                                tags += f"\\bord{ol_width}\\shad{shadow_depth}"
+                            tags = f"\\c{base_color}\\3c{base_outline}\\bord{ol_width}\\shad{shadow_depth}"
                             parts.append(f"{{{tags}}}{w}")
 
                     event_text = prefix + " ".join(parts)
@@ -518,13 +512,22 @@ def generate_ass(
                 # Uses punctuation-aware, speaker-rate-scaled timing that
                 # matches the frontend getCurrentWordIndex() algorithm so
                 # the exported video looks identical to the preview.
+                # Fallback: character-proportional estimation with natural
+                # speech rhythm.  Uses punctuation-aware, speaker-rate-scaled
+                # timing that matches the frontend getCurrentWordIndex().
                 _BASE_OVERHEAD_S = 0.04
-                _ANTICIPATION_S = 0.0  # must match frontend ClipPreview _ANTICIPATION_S for 1:1 parity
+                _ANTICIPATION_S = 0.10  # must match frontend _ANTICIPATION_S
                 _PUNCT_PAUSE = {
-                    ",": 0.12, ";": 0.14, ":": 0.10,
-                    ".": 0.18, "!": 0.18, "?": 0.20,
-                    "\u2014": 0.10, "\u2013": 0.08,
+                    ",": 0.15, ";": 0.16, ":": 0.12,
+                    ".": 0.22, "!": 0.22, "?": 0.24,
+                    "\u2014": 0.12, "\u2013": 0.10,
                 }
+                # Function words are spoken ~25% faster in natural speech
+                _FAST_WORDS = frozenset({
+                    "the", "a", "an", "to", "in", "on", "at", "of", "for",
+                    "and", "but", "or", "is", "was", "are", "were", "it",
+                    "its", "this", "that",
+                })
                 base_color = _hex_to_ass_color(speaker_color_map[speaker])
                 base_outline = style_outline_color
                 total_chars = sum(len(w) for w in words)
@@ -552,11 +555,34 @@ def generate_ass(
                 char_time = max(duration - total_pause, duration * 0.45)
                 pause_scale = (duration - char_time) / max(total_pause, 0.01)
 
-                current_time = clip_start
+                # Compute raw durations with natural-speech adjustments,
+                # then normalize to fit exactly within the segment.
+                raw_durations = []
                 for word_idx in range(len(words)):
                     char_dur = char_time * (len(words[word_idx]) / total_chars)
                     pause = (_BASE_OVERHEAD_S * rate_scale + punct_pauses[word_idx]) * pause_scale
                     word_dur = char_dur + pause
+                    # Function words are spoken faster
+                    stripped = words[word_idx].lower().rstrip(".,!?;:\u2014\u2013")
+                    if stripped in _FAST_WORDS:
+                        word_dur *= 0.75
+                    # First word emphasis (slightly longer hold)
+                    if word_idx == 0:
+                        word_dur *= 1.15
+                    # Last word trailing emphasis
+                    elif word_idx == len(words) - 1:
+                        word_dur *= 1.10
+                    raw_durations.append(word_dur)
+
+                # Normalize so total exactly matches segment duration
+                total_raw = sum(raw_durations)
+                if total_raw > 0:
+                    norm = duration / total_raw
+                    raw_durations = [d * norm for d in raw_durations]
+
+                current_time = clip_start
+                for word_idx in range(len(words)):
+                    word_dur = raw_durations[word_idx]
                     word_end = current_time + word_dur
                     if word_idx == len(words) - 1:
                         word_end = clip_end
@@ -568,20 +594,17 @@ def generate_ass(
                     # Shift event start earlier by anticipation offset
                     shifted_start = max(clip_start, current_time - anticipation)
 
-                    # Build text with inline overrides on the active word
+                    # Build text with inline overrides on the active word.
+                    # Every word gets explicit \bord and \shad.
                     parts = []
                     for i, w in enumerate(words):
                         if i == word_idx:
-                            tags = f"\\c{aw_color}\\3c{aw_outline}"
-                            if ol_width > 0:
-                                tags += f"\\bord{ol_width}\\shad{shadow_depth}"
+                            tags = f"\\c{aw_color}\\3c{aw_outline}\\bord{ol_width}\\shad{shadow_depth}"
                             if aw_bg:
                                 tags += f"\\4c{aw_bg}"
                             parts.append(f"{{{tags}}}{w}")
                         else:
-                            tags = f"\\c{base_color}\\3c{base_outline}"
-                            if ol_width > 0:
-                                tags += f"\\bord{ol_width}\\shad{shadow_depth}"
+                            tags = f"\\c{base_color}\\3c{base_outline}\\bord{ol_width}\\shad{shadow_depth}"
                             parts.append(f"{{{tags}}}{w}")
 
                     event_text = prefix + " ".join(parts)
@@ -593,6 +616,7 @@ def generate_ass(
                 safe_text = f"{speaker}: {safe_text}"
             bord_override = f"{{{bord_tag}}}" if bord_tag else ""
             base_text_events.append((clip_start, clip_end, style_name, f"{bord_override}{safe_text}"))
+
 
     # --- Layer 0: base text events ---
     # Fill small inter-segment gaps so text never disappears briefly.
@@ -608,31 +632,28 @@ def generate_ass(
                 # Small gap: extend to fill — keeps text visible between segments
                 base_text_events[i] = (ev_start, next_start, ev_style, ev_text)
 
-    # --- Layer 1: per-word highlight events (active word mode) ---
-    # Eliminate temporal overlap AND fill ALL gaps between word events.
+    # --- Per-word highlight events (active word mode, Layer 0) ---
+    # Eliminate temporal overlap AND fill small gaps between word events.
     # Overlap: when multiple word events overlap in time, libass renders
     # them all simultaneously and stacks them vertically ("bouncing").
-    # Gaps: any gap causes Layer 1 to disappear, falling back to Layer 0
-    # (base text with no highlighting), making the active word appear to
-    # stop updating.
-    #
-    # Fix: sort by start time, then for each consecutive pair:
-    #   - If overlapping: clamp event N's end to event N+1's start
-    #   - Any gap: ALWAYS extend event N's end to fill it — this keeps
-    #     the last highlighted word visible until the next word starts,
-    #     matching how the frontend preview works.
+    # Gaps: short gaps should be filled to keep the last highlighted word
+    # visible until the next word starts. But long gaps (> 0.5s, e.g.
+    # between segments during pauses) should NOT be filled — letting the
+    # subtitle disappear during natural pauses looks more human-edited
+    # than keeping a stale word highlighted for seconds.
     if pending_word_events:
         pending_word_events.sort(key=lambda e: e[0])
+        _MAX_GAP_FILL_S = 0.5
         for i in range(len(pending_word_events) - 1):
             ev_start, ev_end, ev_style, ev_text = pending_word_events[i]
             next_start = pending_word_events[i + 1][0]
             if ev_end >= next_start:
                 # Overlap: clamp to eliminate bouncing
                 pending_word_events[i] = (ev_start, next_start, ev_style, ev_text)
-            else:
-                # Gap: always extend to fill — keeps the last highlighted
-                # word visible until the next word event starts
+            elif next_start - ev_end <= _MAX_GAP_FILL_S:
+                # Small gap: extend to fill
                 pending_word_events[i] = (ev_start, next_start, ev_style, ev_text)
+            # Long gaps (> 0.5s): let subtitle disappear during pauses
 
     # ═══════════════════════════════════════════════════════════════════
     # FINAL OVERLAP ELIMINATION — unified pass at centisecond precision

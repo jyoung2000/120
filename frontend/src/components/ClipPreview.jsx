@@ -107,11 +107,18 @@ function hexToRgba(hex, opacity) {
 //  3. Character-proportional duration with natural speech weighting
 //  4. Anticipation offset so highlight leads audio for perceptual sync
 const _BASE_OVERHEAD_S = 0.04;   // minimum gap between words
-const _ANTICIPATION_S  = 0.0;    // perceptual lead (0 = neutral)
+const _ANTICIPATION_S  = 0.10;   // perceptual lead — highlight leads audio
 const _AUDIO_BUFFER_S  = 0.12;   // compensate for browser audio output lag
 
 // Extra pause added AFTER a word that ends with punctuation
-const _PUNCT_PAUSE = { ',': 0.12, ';': 0.14, ':': 0.10, '.': 0.18, '!': 0.18, '?': 0.20, '\u2014': 0.10, '\u2013': 0.08 };
+const _PUNCT_PAUSE = { ',': 0.15, ';': 0.16, ':': 0.12, '.': 0.22, '!': 0.22, '?': 0.24, '\u2014': 0.12, '\u2013': 0.10 };
+
+// Function words are spoken ~25% faster in natural speech
+const _FAST_WORDS = new Set([
+  'the', 'a', 'an', 'to', 'in', 'on', 'at', 'of', 'for',
+  'and', 'but', 'or', 'is', 'was', 'are', 'were', 'it',
+  'its', 'this', 'that',
+]);
 
 // Compute per-speaker words-per-second from the clip's transcript segments.
 // Returns a Map<speaker, wps>.  Called once per clip, not per frame.
@@ -142,11 +149,11 @@ function getCurrentWordIndex(segment, relativeTime, speakerRates) {
   // Words are already in clip-relative time (offset during clipSegments construction).
   // Apply the same audio buffer compensation as the fallback path — browsers
   // report video.currentTime ~120ms before the user actually hears the audio
-  // (output pipeline latency).  Combined with the 80ms anticipation lead, the
-  // net perceptual effect is: highlight appears ~80ms before the word is heard,
+  // (output pipeline latency).  Combined with the 100ms anticipation lead, the
+  // net perceptual effect is: highlight appears ~100ms before the word is heard,
   // which feels like natural "reading ahead" sync.
   if (segment.words && segment.words.length === words.length) {
-    const anticipation = 0.08; // 80ms lead for perceptual sync
+    const anticipation = 0.10; // 100ms lead for perceptual sync
     const adjusted = relativeTime + anticipation - _AUDIO_BUFFER_S;
     if (adjusted < segment.words[0].start) return -1;
     for (let i = 0; i < segment.words.length; i++) {
@@ -188,7 +195,14 @@ function getCurrentWordIndex(segment, relativeTime, speakerRates) {
   for (let i = 0; i < words.length; i++) {
     const charDur = charTime * (words[i].length / totalChars);
     const pause = (_BASE_OVERHEAD_S * rateScale + punctPauses[i]) * pauseScale;
-    const wordDur = charDur + pause;
+    let wordDur = charDur + pause;
+    // Function words are spoken faster
+    const stripped = words[i].toLowerCase().replace(/[.,!?;:\u2014\u2013]+$/, '');
+    if (_FAST_WORDS.has(stripped)) wordDur *= 0.75;
+    // First word emphasis (slightly longer hold)
+    if (i === 0) wordDur *= 1.15;
+    // Last word trailing emphasis
+    else if (i === words.length - 1) wordDur *= 1.10;
     if (elapsed < t + wordDur) return i;
     t += wordDur;
   }

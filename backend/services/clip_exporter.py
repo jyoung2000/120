@@ -228,8 +228,7 @@ def _validate_ass_settings(
     expected_font_size = max(16, round(base_size_px * font_scale))
     expected_bold = ASS_FONT_WEIGHT_MAP.get(font_weight, 0)
     expected_alignment = 2  # Always bottom-center for absolute vertical positioning
-    scaled_outline_width = max(0, round(outline_width * font_scale * 2)) if outline_width > 0 else 0
-    base_outline_width = max(0, round(outline_width * font_scale)) if outline_width > 0 else 0
+    scaled_outline_width = max(0, round(outline_width * font_scale * 3)) if outline_width > 0 else 0
 
     # Expected margins
     expected_margin_h = max(20, int(video_width * (100 - max_width_pct) / 100 / 2))
@@ -249,8 +248,7 @@ def _validate_ass_settings(
         expected_border_style = 1
         expected_outline_colour = _hex_to_ass_color_with_alpha(outline_color, outline_opacity)
         expected_ol_width = scaled_outline_width
-        # Shadow uses base (un-multiplied) outline width — matches frontend
-        expected_shadow = max(1, min(4, round(base_outline_width * 0.75))) if base_outline_width > 0 else 0
+        expected_shadow = max(1, min(4, round(scaled_outline_width * 0.75))) if scaled_outline_width > 0 else 0
 
     # --- 1. PlayRes dimensions ---
     playres_x = re.search(r"PlayResX:\s*(\d+)", ass_content)

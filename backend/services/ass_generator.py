@@ -239,7 +239,7 @@ def generate_ass(
     # so visible per-side = scaledOlWidth = round(olWidth * fontScale).
     # ASS `\bord` specifies the border expanding outward from the glyph —
     # it IS the per-side width — so it should equal the same 1x value.
-    scaled_outline_width = max(0, round(outline_width * font_scale)) if outline_width > 0 else 0
+    scaled_outline_width = max(0, round(outline_width * font_scale * 3)) if outline_width > 0 else 0
 
     # Horizontal margin from max_width_pct: (100% - max_width%) / 2 of output width
     margin_h = max(20, int(video_width * (100 - max_width_pct) / 100 / 2))
@@ -354,7 +354,7 @@ def generate_ass(
         f"PlayResX: {video_width}",
         f"PlayResY: {video_height}",
         "WrapStyle: 1",
-        "ScaledBorderAndShadow: yes",
+        "ScaledBorderAndShadow: no",
         "",
         "[V4+ Styles]",
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
@@ -432,19 +432,14 @@ def generate_ass(
         safe_text = text.replace("\\", "\\\\").replace("{", "\\{").replace("}", "\\}")
 
         if active_word_enabled:
-            # --- Single-layer approach: word events on Layer 0 only ---
-            # Each word event contains the FULL segment text with inline
-            # color overrides (active word highlighted, others in base color).
-            # Gap-filling ensures complete temporal coverage so no base text
-            # layer is needed.
-            #
-            # The old two-layer approach (Layer 0 base + Layer 1 overlay)
-            # caused garbled/overlapping text in exports when the layers
-            # didn't composite perfectly (e.g. outline rendering differences
-            # between layers, font fallback mismatches).
             prefix = f"{speaker}: " if show_speaker_labels and speaker else ""
 
-            # --- Per-word highlight events (Layer 0) ---
+            # Add base text event on Layer 0 (full segment, no highlight)
+            base_bord_override = f"{{{bord_tag}}}" if bord_tag else ""
+            base_event_text = f"{base_bord_override}{prefix}{safe_text}" if prefix else f"{base_bord_override}{safe_text}"
+            base_text_events.append((clip_start, clip_end, style_name, base_event_text))
+
+            # --- Per-word highlight events ---
             words = safe_text.split()
             if len(words) <= 1:
                 # Single word — just color the whole event with active word color
@@ -703,7 +698,7 @@ def generate_ass(
     for ev in base_text_events:
         all_events.append((0, ev[0], ev[1], ev[2], ev[3]))
     for ev in pending_word_events:
-        all_events.append((0, ev[0], ev[1], ev[2], ev[3]))
+        all_events.append((1, ev[0], ev[1], ev[2], ev[3]))
 
     # Process each layer independently.
     for layer in (0, 1):

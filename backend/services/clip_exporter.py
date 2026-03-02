@@ -1680,6 +1680,14 @@ async def export_clip(
 
             logger.info("FFmpeg export command for clip %s: %s", clip_id, " ".join(cmd))
             logger.info("FFmpeg filter chain for clip %s: %s", clip_id, vf or "(none)")
+            logger.info(
+                "Export quality for clip %s: requested=%s, filter_chain=%s, "
+                "source=%dx%d, expected_output=%s",
+                clip_id, export_quality, vf or "(none)",
+                video_width, video_height,
+                f"{ASPECT_RATIO_DIMS_BY_QUALITY.get(export_quality, {}).get(aspect_ratio, 'native')}"
+                if aspect_ratio else f"{QUALITY_MAX_HEIGHT.get(export_quality, 1080)}p",
+            )
             await _notify(f"Encoding clip {clip_id} with filters ({filter_desc})...")
 
             proc = await asyncio.create_subprocess_exec(

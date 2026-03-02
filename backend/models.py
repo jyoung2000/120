@@ -99,6 +99,8 @@ class ClipSEO(BaseModel):
     description: str
     tags: list[str] = []
     platform_tips: str = ""
+    youtube_shorts_description: str = ""
+    youtube_description: str = ""
 
 
 class SubtitleSettings(BaseModel):

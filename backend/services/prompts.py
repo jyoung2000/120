@@ -104,9 +104,25 @@ DEFAULT_SEO_PROMPT = (
     "These are the tags people search and browse on social platforms.\n"
     "   Example: [\"#cooking\", \"#foodtok\", \"#recipe\", \"#homemade\", \"#fyp\"]\n\n"
     "4. PLATFORM_TIPS — One short sentence of posting advice for this specific clip.\n\n"
+    "5. YOUTUBE_SHORTS_DESCRIPTION — Write a YouTube Shorts description optimized for "
+    "discovery and SEO (max 200 chars). Start with a compelling hook sentence that "
+    "describes what happens in the clip. Include 3-5 relevant hashtags inline. "
+    "Add a call-to-action like 'Follow for more' or 'Like if you agree'. "
+    "Keep it punchy and scannable — Shorts viewers scroll fast.\n"
+    "   Example: \"He said the one thing nobody expected 😳 The reaction was priceless "
+    "#shorts #reaction #viral #funny\"\n\n"
+    "6. YOUTUBE_DESCRIPTION — Write a full YouTube video description optimized for "
+    "search ranking and SEO (300-800 chars). Structure it as:\n"
+    "   Line 1: Hook sentence summarizing what happens in the clip\n"
+    "   Line 2-3: Expand on the context — who, what, why it matters\n"
+    "   Line 4: Call-to-action (subscribe, comment, share)\n"
+    "   Line 5+: Relevant keywords and phrases that people would search for, "
+    "written naturally into sentences (not keyword stuffed). Include timestamps "
+    "if the clip has distinct moments. End with 5-10 hashtags.\n"
+    "   This should read like a real YouTuber wrote it — conversational but informative.\n\n"
     "Return ONLY valid JSON:\n"
     '{"title": "...", "description": "...", "tags": ["#tag1", "#tag2", ...], '
-    '"platform_tips": "..."}'
+    '"platform_tips": "...", "youtube_shorts_description": "...", "youtube_description": "..."}'
 )
 
 

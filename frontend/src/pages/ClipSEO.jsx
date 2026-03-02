@@ -713,8 +713,8 @@ export default function ClipSEO() {
                 const olB = parseInt(olHex.substring(4, 6), 16) || 0;
                 const olOpacity = Math.max(0, Math.min(100, subtitleOutlineOpacity ?? 100)) / 100;
                 const olWidth = Math.max(0, Math.min(10, subtitleOutlineWidth ?? 2));
-                const backendOlWidth = Math.max(0, Math.round(olWidth * backendFontScale));
-                const scaledOlWidth = containerScale > 0 ? Math.max(0, Math.round(backendOlWidth * containerScale)) : 0;
+                const backendOlWidth = Math.max(0, Math.round(olWidth * backendFontScale * 2));
+                const scaledOlWidth = containerScale > 0 ? backendOlWidth * containerScale : 0;
                 let outlineStyle;
                 if (subtitleBgEnabled) {
                   // Background box mode — no visible outline (blends into box in ASS)
@@ -724,7 +724,7 @@ export default function ClipSEO() {
                   const shadowDepth = Math.max(1, Math.min(4, Math.round(backendOlWidth * 0.75)));
                   const scaledShadow = Math.max(1, Math.round(shadowDepth * containerScale));
                   outlineStyle = {
-                    WebkitTextStroke: `${scaledOlWidth}px rgba(${olR},${olG},${olB},${olOpacity})`,
+                    WebkitTextStroke: `${scaledOlWidth * 2}px rgba(${olR},${olG},${olB},${olOpacity})`,
                     paintOrder: 'stroke fill',
                     textShadow: `${scaledShadow}px ${scaledShadow}px 0px rgba(0,0,0,0.5)`,
                   };
@@ -786,13 +786,13 @@ export default function ClipSEO() {
                                 const awOlR = parseInt(awOlHex.substring(0, 2), 16) || 0;
                                 const awOlG = parseInt(awOlHex.substring(2, 4), 16) || 0;
                                 const awOlB = parseInt(awOlHex.substring(4, 6), 16) || 0;
-                                const scaledOl = scaledOlWidth;
+                                const scaledOl = scaledOlWidth; // already includes * 2 from backendOlWidth
                                 return words.map((w, wi) => {
                                   const isActive = wi === currentWordIdx;
                                   const wStyle = isActive ? {
                                     color: activeWordColor,
                                     ...(scaledOl > 0 ? {
-                                      WebkitTextStroke: `${scaledOl}px rgba(${awOlR},${awOlG},${awOlB},${(subtitleOutlineOpacity ?? 100) / 100})`,
+                                      WebkitTextStroke: `${scaledOl * 2}px rgba(${awOlR},${awOlG},${awOlB},${(subtitleOutlineOpacity ?? 100) / 100})`,
                                       paintOrder: 'stroke fill',
                                     } : {}),
                                     ...(activeWordBgOpacity > 0 ? {
@@ -937,7 +937,7 @@ export default function ClipSEO() {
           {/* Subject Tracking Controls */}
           {job.scenes?.length > 0 && (
             <div style={sectionStyle}>
-              <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
+              <div style={{ marginBottom: 6 }}>
                 <button
                   onClick={async () => {
                     try {
@@ -949,7 +949,7 @@ export default function ClipSEO() {
                     } catch {}
                   }}
                   style={{
-                    flex: 1,
+                    width: '100%',
                     padding: '8px 14px',
                     fontSize: 11,
                     fontWeight: 600,
@@ -964,37 +964,6 @@ export default function ClipSEO() {
                   }}
                 >
                   Reset Subject to Center
-                </button>
-                <button
-                  onClick={async () => {
-                    try {
-                      const res = await fetch(`/api/jobs/${jobId}/reanalyze-subject`, { method: 'POST' });
-                      if (res.ok) {
-                        // Poll for completion — the WebSocket on the analysis page handles updates,
-                        // but ClipSEO doesn't have a WS. Fetch after a delay.
-                        setTimeout(async () => {
-                          const r2 = await fetch(`/api/jobs/${jobId}`);
-                          if (r2.ok) setJob(await r2.json());
-                        }, 15000);
-                      }
-                    } catch {}
-                  }}
-                  style={{
-                    flex: 1,
-                    padding: '8px 14px',
-                    fontSize: 11,
-                    fontWeight: 600,
-                    background: 'var(--accent-cyan)',
-                    color: 'var(--bg-base)',
-                    border: 'none',
-                    borderRadius: 'var(--radius-sm)',
-                    cursor: 'pointer',
-                    fontFamily: 'var(--font-mono)',
-                    textTransform: 'uppercase',
-                    letterSpacing: '0.03em',
-                  }}
-                >
-                  Re-analyze AI
                 </button>
               </div>
               <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
@@ -1209,7 +1178,7 @@ export default function ClipSEO() {
                   </div>
                   <button
                     onClick={() => copyToClipboard(
-                      `${seo.title}\n\n${seo.description}\n\n${(seo.tags || []).join(' ')}`,
+                      `${seo.title}\n\n${seo.description}\n\n${seo.youtube_shorts_description ? `YouTube Shorts:\n${seo.youtube_shorts_description}\n\n` : ''}${seo.youtube_description ? `YouTube Description:\n${seo.youtube_description}\n\n` : ''}${(seo.tags || []).join(' ')}`,
                       'all'
                     )}
                     style={{
@@ -1253,6 +1222,40 @@ export default function ClipSEO() {
                   {seo.description}
                 </div>
               </div>
+
+              {/* YouTube Shorts Description */}
+              {seo.youtube_shorts_description && (
+                <div style={sectionStyle}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                    <div style={{ fontSize: 10, fontFamily: 'var(--font-mono)', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.1em' }}>
+                      YouTube Shorts Description
+                    </div>
+                    <button onClick={() => copyToClipboard(seo.youtube_shorts_description, 'yt-shorts')} style={copyBtnStyle('yt-shorts')}>
+                      {copied === 'yt-shorts' ? 'Copied' : 'Copy'}
+                    </button>
+                  </div>
+                  <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                    {seo.youtube_shorts_description}
+                  </div>
+                </div>
+              )}
+
+              {/* YouTube Description */}
+              {seo.youtube_description && (
+                <div style={sectionStyle}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                    <div style={{ fontSize: 10, fontFamily: 'var(--font-mono)', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.1em' }}>
+                      YouTube Description
+                    </div>
+                    <button onClick={() => copyToClipboard(seo.youtube_description, 'yt-desc')} style={copyBtnStyle('yt-desc')}>
+                      {copied === 'yt-desc' ? 'Copied' : 'Copy'}
+                    </button>
+                  </div>
+                  <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.5, whiteSpace: 'pre-line' }}>
+                    {seo.youtube_description}
+                  </div>
+                </div>
+              )}
 
               {/* Tags */}
               <div style={sectionStyle}>

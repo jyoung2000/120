@@ -634,7 +634,9 @@ export default function ClipPreview({
     const olOpacity = Math.max(0, Math.min(100, subtitleSettings?.subtitleOutlineOpacity ?? 100)) / 100;
     const olWidth = Math.max(0, Math.min(10, subtitleSettings?.subtitleOutlineWidth ?? 2));
     // Two-step scaling matching backend reference resolution
-    const backendOlWidth = Math.max(0, Math.round(olWidth * backendFontScale));
+    // Match the ASS generator's 2x compensation factor (ass_generator.py line 242)
+    // so the preview visually matches the exported video's \bord value.
+    const backendOlWidth = Math.max(0, Math.round(olWidth * backendFontScale * 2));
     // Use fractional CSS pixels for container scaling — integer rounding at
     // small container sizes causes massive proportional error for thin values
     // (e.g. 2 * 0.37 = 0.74 → round to 1 → 2.7px equiv instead of 2px).

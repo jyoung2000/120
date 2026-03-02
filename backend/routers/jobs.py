@@ -508,27 +508,29 @@ async def recenter_subject(job_id: str, background_tasks: BackgroundTasks):
     has_ai_data = any(v != 50 for v in sx_values)
 
     if not has_ai_data:
-        # No AI analysis data — trigger background re-analysis.
-        # center_after=False: preserve per-scene values for dynamic tracking.
-        background_tasks.add_task(_reanalyze_subject_tracking, job_id, center_after=False)
+        # Already centered — nothing to do
         return {
             "job_id": job_id,
             "scenes_recentered": 0,
-            "status": "reanalyzing",
-            "message": "No subject data available — running AI analysis to detect subject position",
+            "subject_x": 50,
+            "per_scene": False,
+            "message": "All scenes already at center position",
         }
 
-    # AI data already exists — return the per-scene values as-is.
-    # The preview player and export pipeline both build keyframes from
-    # per-scene subject_x, so the crop dynamically follows the subject
-    # at whatever aspect ratio is applied.
-    avg_sx = round(sum(sx_values) / len(sx_values))
-    avg_sx = max(10, min(90, avg_sx))
+    # Reset all scenes to center position (subject_x=50)
+    for scene in job.scenes:
+        if isinstance(scene, dict):
+            scene["subject_x"] = 50
+        elif hasattr(scene, "subject_x"):
+            scene.subject_x = 50
+    await database.save_job(job)
+
     return {
         "job_id": job_id,
         "scenes_recentered": len(job.scenes),
-        "subject_x": avg_sx,
-        "per_scene": True,
+        "subject_x": 50,
+        "per_scene": False,
+        "message": f"Reset {len(job.scenes)} scenes to center (subject_x=50)",
     }
 
 

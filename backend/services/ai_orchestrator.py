@@ -304,20 +304,37 @@ class AIOrchestrator:
         job_id: str,
     ) -> tuple[ClipSEO, str]:
         """Returns (seo, provider_name_used)."""
+        # SEO generation is a lightweight task — 60s per provider is generous.
+        _SEO_TIMEOUT = 60
+
         for provider in self._get_active_chain():
+            pname = provider.provider_name
             try:
-                await self._notify_attempt(job_id, provider.provider_name, "SEO generation")
+                await self._notify_attempt(job_id, pname, "SEO generation")
                 t0 = time.monotonic()
-                result = await provider.generate_seo(
-                    clip_title, clip_transcript, video_summary,
-                    platform, cancel_check=self._cancel_check,
+                result = await asyncio.wait_for(
+                    provider.generate_seo(
+                        clip_title, clip_transcript, video_summary,
+                        platform, cancel_check=self._cancel_check,
+                    ),
+                    timeout=_SEO_TIMEOUT,
                 )
                 elapsed = time.monotonic() - t0
-                logger.info("SEO generation via %s completed in %.1fs", provider.provider_name, elapsed)
-                self._circuit_breaker.record_success(provider.provider_name)
-                return result, provider.provider_name
+                logger.info("SEO generation via %s completed in %.1fs", pname, elapsed)
+                self._circuit_breaker.record_success(pname)
+                return result, pname
+            except asyncio.TimeoutError:
+                logger.warning("SEO generation via %s timed out after %ds", pname, _SEO_TIMEOUT)
+                self._circuit_breaker.record_failure(pname)
+                await self._notify_fallback(job_id, pname, f"Timed out after {_SEO_TIMEOUT}s")
+                continue
             except (ProviderRateLimitError, ProviderError) as e:
-                self._circuit_breaker.record_failure(provider.provider_name)
-                await self._notify_fallback(job_id, provider.provider_name, str(e))
+                self._circuit_breaker.record_failure(pname)
+                await self._notify_fallback(job_id, pname, str(e))
+                continue
+            except Exception as e:
+                logger.warning("SEO generation via %s failed unexpectedly: %s", pname, e)
+                self._circuit_breaker.record_failure(pname)
+                await self._notify_fallback(job_id, pname, str(e))
                 continue
         raise AllProvidersFailedError("All providers failed for SEO generation")

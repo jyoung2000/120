@@ -11,6 +11,7 @@ from backend import database
 from backend.config import settings
 from backend.models import ExportRequest, FullVideoExportRequest, GenerateClipsRequest, UpdateClipTimesRequest, UpdateClipTitleRequest
 from backend.models_api import (
+    ActiveExportItem,
     ExportStartedResponse,
     ExportCancelResponse,
     ClipTitleResponse,

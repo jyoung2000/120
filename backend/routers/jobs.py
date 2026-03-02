@@ -16,14 +16,6 @@ from backend.models_api import (
     JobStatusResponse,
     RecenterResponse,
     ReanalyzeResponse,
-    SceneAddResponse,
-    SceneDeleteResponse,
-    SceneUpdateResponse,
-    TranscriptDeleteResponse,
-    TranscriptInsertResponse,
-    TranscriptSegmentResponse,
-    WordRefreshResponse,
-    UploadResponse,
 )
 from backend.services.pipeline import run_analysis, request_cancel, is_cancel_requested
 from backend.services.srt_generator import generate_srt

@@ -570,6 +570,22 @@ export default function ClipPreview({
     return Math.min(scaleW, scaleH);
   }, [containerSize, outputDims]);
 
+  // Compute the actual video content area within the container.
+  // When objectFit: 'contain' is used, the video may not fill the entire
+  // container (pillarboxing or letterboxing).  Subtitles must be constrained
+  // to the video content bounds, not the full container.
+  const videoContentBounds = useMemo(() => {
+    if (containerSize.w === 0 || containerSize.h === 0) return null;
+    const contentW = subtitleScale * outputDims.w;
+    const contentH = subtitleScale * outputDims.h;
+    return {
+      width: contentW,
+      height: contentH,
+      left: (containerSize.w - contentW) / 2,
+      top: (containerSize.h - contentH) / 2,
+    };
+  }, [containerSize, subtitleScale, outputDims]);
+
   // Two-step scaling matching backend (ass_generator.py:146-158):
   // Step 1: scale from reference (1920x1080) to output resolution
   // Step 2: scale from output resolution to container pixels
@@ -724,40 +740,51 @@ export default function ClipPreview({
       <div
         style={{
           position: 'absolute',
-          left: `${effectiveMarginH}%`,
-          right: `${effectiveMarginH}%`,
-          textAlign: 'center',
           pointerEvents: 'none',
           zIndex: 5,
-          ...positionStyle,
+          overflow: 'hidden',
+          ...(videoContentBounds ? {
+            left: videoContentBounds.left,
+            top: videoContentBounds.top,
+            width: videoContentBounds.width,
+            height: videoContentBounds.height,
+          } : {
+            inset: 0,
+          }),
         }}
       >
-        <span
+        <div
           style={{
-            display: 'inline-block',
-            fontFamily,
-            fontSize: subtitleFontSize,
-            fontWeight,
-            color,
-            lineHeight: 1.4,
-            wordWrap: 'break-word',
-            overflowWrap: 'break-word',
-            whiteSpace: 'pre-wrap',
-            ...outlineStyle,
-            ...(bgEnabled
-              ? {
-                  background: hexToRgba(bgColor, bgOpacity / 100),
-                  // ASS BorderStyle=3 uses Outline width as uniform padding on
-                  // all 4 sides.  Two-step: compute backend value then scale.
-                  // Backend: max(int(4 * font_scale), 2) — use Math.floor to
-                  // match Python int() truncation.
-                  padding: `${Math.max(1, Math.max(Math.floor(4 * backendFontScale), 2) * subtitleScale)}px`,
-                }
-              : {}),
+            position: 'absolute',
+            left: `${effectiveMarginH}%`,
+            right: `${effectiveMarginH}%`,
+            textAlign: 'center',
+            ...positionStyle,
           }}
         >
-          {textContent}
-        </span>
+          <span
+            style={{
+              display: 'inline-block',
+              fontFamily,
+              fontSize: subtitleFontSize,
+              fontWeight,
+              color,
+              lineHeight: 1.4,
+              wordWrap: 'break-word',
+              overflowWrap: 'break-word',
+              whiteSpace: 'pre-wrap',
+              ...outlineStyle,
+              ...(bgEnabled
+                ? {
+                    background: hexToRgba(bgColor, bgOpacity / 100),
+                    padding: `${Math.max(1, Math.max(Math.floor(4 * backendFontScale), 2) * subtitleScale)}px`,
+                  }
+                : {}),
+            }}
+          >
+            {textContent}
+          </span>
+        </div>
       </div>
     );
   };

@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import re
 import time
 
 from fastapi import APIRouter, HTTPException
@@ -169,10 +170,16 @@ async def export_clip_endpoint(
                 })
 
             async def _export_progress(msg: str):
+                # Parse actual encoding percentage from message text.
+                # Format: "Encoding clip N... XX% (Ns elapsed, ~Ns remaining)"
+                pct = 0
+                m = re.search(r'\.\.\.\s*(\d+)%', msg)
+                if m:
+                    pct = int(m.group(1))
                 await broadcast_ws(job_id, {
                     "type": "status",
                     "status": "exporting",
-                    "progress": 50,
+                    "progress": pct,
                     "message": msg,
                 })
 
@@ -317,10 +324,16 @@ async def export_full_video_endpoint(job_id: str, req: FullVideoExportRequest):
                 })
 
             async def _export_progress(msg: str):
+                # Parse actual encoding percentage from message text.
+                # Format: "Encoding clip N... XX% (Ns elapsed, ~Ns remaining)"
+                pct = 0
+                m = re.search(r'\.\.\.\s*(\d+)%', msg)
+                if m:
+                    pct = int(m.group(1))
                 await broadcast_ws(job_id, {
                     "type": "status",
                     "status": "exporting",
-                    "progress": 50,
+                    "progress": pct,
                     "message": msg,
                 })
 
